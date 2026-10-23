@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { ROOT, MARKETPLACE_NAME, PLUGIN_NAME, readJson, portableMcpManifest } from './plugin-common.mjs';
+
+const manifest = await readJson(path.join(ROOT, '.codex-plugin', 'plugin.json'));
+const marketplace = await readJson(path.join(ROOT, '.agents', 'plugins', 'marketplace.json'));
+const mcp = await readJson(path.join(ROOT, '.mcp.json'));
+assert.equal(manifest.name, PLUGIN_NAME);
+assert.equal(manifest.skills, './skills/');
+assert.equal(manifest.mcpServers, './.mcp.json');
+assert.equal(marketplace.name, MARKETPLACE_NAME);
+assert.equal(marketplace.plugins[0].name, PLUGIN_NAME);
+assert.equal(marketplace.plugins[0].source.source, 'local');
+assert.equal(marketplace.plugins[0].source.path, '.');
+assert.ok(mcp.mcpServers.codex_scheduler.command);
+const server = mcp.mcpServers.codex_scheduler;
+if (!path.isAbsolute(server.args[0])) assert.deepEqual(mcp, portableMcpManifest(), 'relative paths are allowed only in the portable distribution manifest');
+else assert.ok(path.isAbsolute(server.command) && path.isAbsolute(server.cwd));
+const skill = await fs.readFile(path.join(ROOT, 'skills', 'codex-scheduler', 'SKILL.md'), 'utf8');
+assert.match(skill, /^---\r?\nname: codex-scheduler\r?\ndescription: .+\r?\n---/);
+for (const name of ['scheduler_open', 'scheduler_catalog', 'scheduler_threads', 'scheduler_create', 'scheduler_list', 'scheduler_action']) assert.ok(skill.includes(name));
+console.log('插件清单、MCP 配置、本地来源与技能入口检查通过。');

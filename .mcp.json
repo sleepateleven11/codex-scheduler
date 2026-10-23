@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "codex_scheduler": {
+      "command": "node",
+      "args": [
+        "src\\mcp-server.mjs"
+      ],
+      "cwd": ".",
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 120,
+      "env_vars": [
+        "LOCALAPPDATA",
+        "APPDATA",
+        "USERPROFILE",
+        "CODEX_HOME",
+        "CODEX_CLI_PATH",
+        "SCHEDULER_CODEX_PATH",
+        "SCHEDULER_DATA_DIR",
+        "PATH",
+        "CODEX_APP_TOOLS_PIPE_PATH",
+        "CODEX_THREAD_ID"
+      ]
+    }
+  }
+}

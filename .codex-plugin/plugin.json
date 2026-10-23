@@ -1,0 +1,16 @@
+{
+  "name": "codex-scheduler",
+  "version": "0.3.0",
+  "description": "为 Codex 已有对话安排发送时间，选择项目、模型与思考强度，并在额度恢复后继续排队任务。",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Codex Scheduler",
+    "shortDescription": "定时发送到已有 Codex 对话",
+    "longDescription": "在本机管理 Codex 定时发送队列：选择项目、已有对话、模型、发送时间；额度不足时等待恢复，查看执行状态并暂停或取消任务。",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": ["打开定时任务管理器", "查看正在等待额度恢复的任务", "帮我向已有对话安排一次定时发送"],
+    "screenshots": []
+  }
+}

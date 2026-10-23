@@ -1,0 +1,26 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+.local/
+.scheduler-data/
+coverage/
+dist/
+*.zip
+
+# Local acceptance records may contain real conversation IDs and local URLs.
+verification/
+
+# User credentials and scheduler runtime state never belong in source control.
+.env
+.env.*
+!.env.example
+auth.json
+queue.json
+settings.json
+endpoint.json
+desktop-connection.json
+codex-scheduler-install.json
+worker.lock
+*.pem
+*.key
