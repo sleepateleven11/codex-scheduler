@@ -131,6 +131,76 @@ test('existing local source is checked for tampering before reinstall and never 
   assert.equal(await fs.readFile(existingFile, 'utf8'), 'foreign changed file');
 });
 
+test('Windows stable source publication retries transient locks with a bounded backoff and then succeeds', async t => {
+  const f = await distributableFixture(t);
+  const dataDir = path.join(f.directory, 'recipient data');
+  await fs.mkdir(dataDir);
+  let attempts = 0;
+  const delays = [];
+  const staged = await stageInstallationSource({ sourceRoot: f.root, dataDir, platform: 'win32',
+    rename: async (from, to) => {
+      const code = ['EPERM', 'EACCES', 'EBUSY'][attempts++];
+      if (code) throw Object.assign(new Error('transient Windows directory lock'), { code });
+      await fs.rename(from, to);
+    }, delay: async ms => { delays.push(ms); },
+  });
+  assert.equal(attempts, 4);
+  assert.deepEqual(delays, [100, 200, 300]);
+  assert.equal((await inspectSchedulerSource(staged.root)).manifest.version, '1.2.3');
+});
+
+test('persistent Windows locks stop after ten publication attempts and retain all earlier source copies', async t => {
+  const f = await distributableFixture(t);
+  const dataDir = path.join(f.directory, 'recipient data');
+  await fs.mkdir(dataDir);
+  const previous = await stageInstallationSource({ sourceRoot: f.root, dataDir });
+  const oldFile = path.join(previous.root, 'README.md');
+  const oldContents = await fs.readFile(oldFile, 'utf8');
+  await fs.appendFile(path.join(f.root, 'README.md'), 'updated payload');
+  let attempts = 0;
+  const delays = [];
+  const lock = Object.assign(new Error('persistent Windows lock'), { code: 'EPERM' });
+  await assert.rejects(stageInstallationSource({ sourceRoot: f.root, dataDir, platform: 'win32',
+    rename: async () => { attempts++; throw lock; }, delay: async ms => { delays.push(ms); },
+  }), actual => actual === lock);
+  assert.equal(attempts, 10);
+  assert.deepEqual(delays, [100, 200, 300, 400, 500, 500, 500, 500, 500]);
+  assert.equal(await fs.readFile(oldFile, 'utf8'), oldContents);
+  assert.deepEqual(await fs.readdir(path.dirname(previous.root)), [path.basename(previous.root)]);
+});
+
+test('non-lock publication errors and other platforms fail immediately without retry', async t => {
+  for (const [platform, code] of [['win32', 'ENOSPC'], ['win32', 'EXDEV'], ['linux', 'EPERM']]) {
+    const f = await distributableFixture(t);
+    const dataDir = path.join(f.directory, 'recipient data');
+    await fs.mkdir(dataDir);
+    let attempts = 0;
+    const failure = Object.assign(new Error('not a retryable Windows sharing error'), { code });
+    await assert.rejects(stageInstallationSource({ sourceRoot: f.root, dataDir, platform,
+      rename: async () => { attempts++; throw failure; }, delay: async () => { assert.fail('must not retry unrelated errors'); },
+    }), actual => actual === failure);
+    assert.equal(attempts, 1);
+  }
+});
+
+test('a target appearing during Windows lock retries is validated and never overwritten', async t => {
+  const f = await distributableFixture(t);
+  const dataDir = path.join(f.directory, 'recipient data');
+  await fs.mkdir(dataDir);
+  let attempts = 0;
+  let target;
+  await assert.rejects(stageInstallationSource({ sourceRoot: f.root, dataDir, platform: 'win32',
+    rename: async (from, to) => {
+      attempts++; target = to;
+      await fs.cp(from, to, { recursive: true });
+      await fs.writeFile(path.join(to, 'README.md'), 'foreign target contents');
+      throw Object.assign(new Error('target appeared during sharing violation'), { code: 'EPERM' });
+    }, delay: async () => {},
+  }), /内容不符.*保留/);
+  assert.equal(attempts, 1);
+  assert.equal(await fs.readFile(path.join(target, 'README.md'), 'utf8'), 'foreign target contents');
+});
+
 test('remote, missing and unrelated same-name marketplaces are never migrated', async t => {
   const f = await fixture(t);
   const root = await f.source('current');

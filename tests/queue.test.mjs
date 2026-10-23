@@ -75,6 +75,161 @@ test('deduplicates concurrent create requests by clientRequestId', async t => {
   assert.equal(queue.list().length, 1);
 });
 
+test('deleting pending and historical tasks removes content and results from the durable store', async t => {
+  const { queue, calls, storePath } = await harness(t);
+  for (const status of ['scheduled', 'waiting_quota', 'waiting_thread', 'paused', 'completed', 'failed', 'cancelled', 'needs_review']) {
+    const task = await queue.create(input({ threadId: `delete-${status}`, prompt: `private prompt ${status}`, clientRequestId: `request-${status}` }));
+    const stored = queue.tasks.find(item => item.id === task.id);
+    Object.assign(stored, { status, result: `private result ${status}` });
+    if (status === 'needs_review') Object.assign(stored, { dispatchState: 'submitted', submissionReceipt: desktopReceipt(), turnId: 'possibly-sent' });
+    await queue._persist();
+    assert.deepEqual(await queue.delete(task.id), { deleted: true, id: task.id });
+    assert.throws(() => queue.get(task.id), /Task not found/);
+    const document = await readFile(storePath, 'utf8');
+    assert.ok(!document.includes(`private prompt ${status}`));
+    assert.ok(!document.includes(`private result ${status}`));
+    assert.ok(!document.includes(`request-${status}`));
+    assert.deepEqual(await queue.delete(task.id), { deleted: true, id: task.id });
+  }
+  await queue.tick();
+  assert.deepEqual(queue.list(), []);
+  assert.equal(calls.execute.length, 0);
+  const document = JSON.parse(await readFile(storePath, 'utf8'));
+  assert.equal(document.deletedRequestHashes.length, 8);
+  assert.ok(document.deletedRequestHashes.every(hash => /^[a-f0-9]{64}$/.test(hash)));
+});
+
+test('deletion tombstones reject concurrent and post-restart retries of the same creation request', async t => {
+  const { queue, adapter, storePath, now } = await harness(t);
+  const payload = input({ clientRequestId: 'deleted-create-request' });
+  const task = await queue.create(payload);
+  const deleting = queue.delete(task.id);
+  const lateCreate = queue.create(payload);
+  await assert.rejects(lateCreate, error => error.code === 'creation_deleted' && error.statusCode === 409);
+  await deleting;
+  await queue.stop();
+  const reopened = await new QueueManager({ storePath, adapter, clock: now }).initialize();
+  await assert.rejects(reopened.create(payload), error => error.code === 'creation_deleted');
+  assert.deepEqual(reopened.list(), []);
+  const fresh = await reopened.create({ ...payload, clientRequestId: 'a-new-explicit-request' });
+  assert.notEqual(fresh.id, task.id);
+  await reopened.stop();
+});
+
+test('deleting a missing task is idempotent and never writes to storage', async t => {
+  const { queue } = await harness(t);
+  queue._writeStore = async () => { assert.fail('A missing task must not trigger a write.'); };
+  assert.deepEqual(await queue.delete('already-gone'), { deleted: true, id: 'already-gone' });
+  assert.equal(queue.lastTickError, null);
+});
+
+test('running, actively processed, and inconsistent pending submissions cannot be deleted', async t => {
+  const { queue, storePath } = await harness(t);
+  for (const proof of [{ status: 'running' }, { _processing: true }, { _active: true }, { dispatchState: 'intent' }, { dispatchState: 'submitted' }, { submissionReceipt: desktopReceipt() }, { turnId: 'possibly-sent' }]) {
+    const task = await queue.create(input({ threadId: `protected-${queue.list().length}` }));
+    const stored = queue.tasks.find(item => item.id === task.id);
+    const { _processing, _active, ...fields } = proof;
+    Object.assign(stored, fields);
+    if (_processing) queue._processing.add(task.id);
+    if (_active) queue._active.add(task.id);
+    await queue._persist();
+    const before = await readFile(storePath, 'utf8');
+    await assert.rejects(queue.delete(task.id), error => error.code === 'task_busy' && error.statusCode === 409);
+    assert.equal(await readFile(storePath, 'utf8'), before);
+    queue._processing.delete(task.id); queue._active.delete(task.id);
+  }
+});
+
+test('a task deleted after tick snapshots candidates never reaches its adapter', async t => {
+  let release; let started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const began = new Promise(resolve => { started = resolve; });
+  const executed = [];
+  const { queue, calls } = await harness(t, { async execute(task) { executed.push(task.id); started(); await gate; return { status: 'completed' }; } });
+  const first = await queue.create(input({ threadId: 'first-thread' }));
+  const second = await queue.create(input({ threadId: 'second-thread' }));
+  const ticking = queue.tick();
+  await began;
+  await queue.delete(second.id);
+  release();
+  await ticking;
+  assert.deepEqual(executed, [first.id]);
+  assert.deepEqual(calls.state, [first.id]);
+  assert.throws(() => queue.get(second.id), /Task not found/);
+});
+
+test('deletion failure rolls back before a concurrent create snapshot and pauses dispatch until retry', async t => {
+  const { queue, storePath, calls } = await harness(t);
+  const original = await queue.create(input({ clientRequestId: 'restore-on-error', threadId: 'shared-thread' }));
+  const follower = await queue.create(input({ threadId: 'shared-thread' }));
+  let release; let prepared;
+  const gate = new Promise(resolve => { release = resolve; });
+  const began = new Promise(resolve => { prepared = resolve; });
+  const writeStore = queue._writeStore.bind(queue);
+  let failOnce = true;
+  queue._writeStore = async () => {
+    if (failOnce && !queue.tasks.some(task => task.id === original.id)) {
+      failOnce = false; prepared(); await gate; throw new Error('Isolated disk failure.');
+    }
+    return writeStore();
+  };
+  const deleting = queue.delete(original.id);
+  const rejected = assert.rejects(deleting, error => error.code === 'deletion_persist_failed' && error.statusCode === 503);
+  await began;
+  await queue.tick();
+  assert.equal(calls.execute.length, 0, 'the follower must remain blocked while deletion is uncommitted');
+  const creating = queue.create(input({ clientRequestId: 'concurrent-create', threadId: 'another-thread' }));
+  release();
+  await rejected;
+  const concurrent = await creating;
+  const document = JSON.parse(await readFile(storePath, 'utf8'));
+  assert.deepEqual(new Set(document.tasks.map(task => task.id)), new Set([original.id, follower.id, concurrent.id]));
+  assert.equal(queue.get(original.id).prompt, original.prompt);
+  assert.equal(queue.get(original.id).status, 'paused');
+  assert.equal(document.tasks.find(task => task.id === original.id).status, 'paused');
+  assert.equal(document.deletedRequestHashes, undefined);
+  await queue.tick();
+  assert.equal(calls.execute.length, 0, 'failed deletion must not silently resume sending');
+  assert.match(queue.lastTickError, /调度已暂停/);
+  await queue.delete(original.id);
+  assert.equal(queue.lastTickError, null);
+  await queue.tick();
+  assert.ok(calls.execute.every(task => task.id !== original.id));
+  assert.ok(calls.execute.some(task => task.id === concurrent.id));
+});
+
+test('a failed deletion durably pauses a waiting task across restart until explicit recovery', async t => {
+  const { queue, adapter, storePath, now, calls } = await harness(t);
+  const task = await queue.create(input({ clientRequestId: 'failed-delete-stays-paused' }));
+  const follower = await queue.create(input());
+  const writeStore = queue._writeStore.bind(queue);
+  let failOnce = true;
+  queue._writeStore = async () => { if (failOnce) { failOnce = false; throw new Error('Isolated transient write failure.'); } return writeStore(); };
+  await assert.rejects(queue.delete(task.id), error => error.code === 'deletion_persist_failed');
+  assert.equal(JSON.parse(await readFile(storePath, 'utf8')).tasks.find(item => item.id === task.id).status, 'paused');
+  await queue.stop();
+  const reopened = await new QueueManager({ storePath, adapter, clock: now }).initialize();
+  await reopened.tick();
+  assert.equal(calls.execute.length, 0);
+  assert.equal(reopened.get(task.id).status, 'paused');
+  assert.equal(reopened.get(follower.id).status, 'scheduled');
+  await reopened.resume(task.id);
+  await reopened.tick();
+  assert.equal(calls.execute.length, 1, 'resuming is the explicit authorization to restore sending');
+  await reopened.stop();
+});
+
+test('invalid deletion markers fail closed instead of permitting task resurrection', async t => {
+  const { storePath, adapter, now } = await harness(t);
+  for (const deletedRequestHashes of ['invalid', ['not-a-hash'], ['a'.repeat(64), 'a'.repeat(64)]]) {
+    const body = JSON.stringify({ version: 1, tasks: [], deletedRequestHashes });
+    await writeFile(storePath, body);
+    const reopened = new QueueManager({ storePath, adapter, clock: now });
+    await assert.rejects(reopened.initialize(), /Invalid deleted request markers/);
+    assert.equal(await readFile(storePath, 'utf8'), body);
+  }
+});
+
 test('the adapter-authorized source thread persists and remains fixed when a task is edited', async t => {
   const sourceThreadId = '11111111-1111-7111-8111-111111111111';
   const { queue, adapter, storePath, now } = await harness(t);

@@ -15,7 +15,7 @@
         <button type="button" id="setup-nav-button" class="nav-item" aria-label="打开连接自检" title="连接自检" aria-controls="setup-panel"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 3v4M16 3v4M6 7h12v3a6 6 0 0 1-12 0V7ZM12 16v5"/></svg><span class="nav-label">连接自检</span></button>
       </nav>
       <div class="sidebar-tip"><span class="tiny-label">让等待有安排</span><p>保持 Codex 运行、电脑唤醒，任务就会按计划继续。</p></div>
-      <div class="sidebar-bottom"><span id="connection-dot" class="connection-dot"></span><span id="connection-label">正在连接</span><span class="version">v0.3.1</span></div>
+      <div class="sidebar-bottom"><span id="connection-dot" class="connection-dot"></span><span id="connection-label">正在连接</span><span class="version">v0.3.2</span></div>
     </aside>
     <main id="main" class="main-content">
       <header class="page-header"><div><div class="page-title-row"><h1>定时任务</h1><span class="page-badge">本地队列</span></div><p class="header-description">安排下一条消息，让工作按计划继续。</p></div><button type="button" id="refresh-button" class="button button-secondary refresh-button" aria-label="刷新任务与连接状态"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.5 6M20 4v7h-7"/></svg><span>刷新</span></button></header>
@@ -62,6 +62,7 @@
     </main>
   </div>
   <dialog id="retry-dialog" class="confirm-dialog" aria-labelledby="retry-dialog-title" aria-describedby="retry-dialog-description"><form method="dialog"><span class="dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m12 3 10 18H2L12 3ZM12 9v5M12 17h.01"/></svg></span><h2 id="retry-dialog-title">确认是否重新发送</h2><p id="retry-dialog-description">上次发送的结果未能确认，重试可能产生重复消息。请先打开目标对话，核对任务是否已经执行。</p><p class="dialog-note">只有确认仍需再次发送时，才继续重试。</p><div class="dialog-actions"><button type="submit" class="button button-secondary" value="cancel" autofocus>返回核对</button><button type="submit" class="button button-primary" value="retry">确认重新发送</button></div></form></dialog>
+  <dialog id="delete-dialog" class="confirm-dialog delete-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description delete-dialog-note"><form method="dialog"><span class="dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></span><h2 id="delete-dialog-title">删除这项任务？</h2><p id="delete-dialog-target" class="dialog-target"></p><p id="delete-dialog-description">删除本地任务记录，删除后无法恢复。</p><p id="delete-dialog-note" class="dialog-note">只删除本地任务记录，不删除 Codex 对话，也不撤回或删除已经发出的消息。</p><div class="dialog-actions"><button type="submit" class="button button-secondary" value="cancel" autofocus>保留任务</button><button type="submit" class="button button-danger" value="delete">确认删除</button></div></form></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

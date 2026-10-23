@@ -13,6 +13,48 @@ test('a receipt, turn or persisted dispatch intent prevents editing even if stat
   }
   assert.equal(ui.canEditTask({ status: 'scheduled', lastRejectedSubmission: {}, dispatchState: null }), true);
 });
+
+test('pending, paused and historical records can be deleted while running and unknown tasks stay protected', () => {
+  for (const status of ['scheduled', 'waiting_quota', 'waiting_thread', 'paused', 'completed', 'failed', 'cancelled', 'needs_review']) {
+    assert.equal(ui.canDeleteTask({ status }), true, status);
+    assert.equal(ui.taskDeleteBlockReason({ status }), '');
+  }
+  for (const status of ['running', 'unexpected', undefined]) assert.equal(ui.canDeleteTask({ status }), false, String(status));
+  assert.match(ui.taskDeleteBlockReason({ status: 'running' }), /运行或派发中/);
+});
+
+test('pending records with an uncertain dispatch cannot be hidden by deletion', () => {
+  for (const status of ['scheduled', 'waiting_quota', 'waiting_thread', 'paused']) {
+    for (const extra of [{ submissionReceipt: {} }, { turnId: 'turn-1' }, { dispatchState: 'intent' }, { dispatchState: 'submitted' }]) {
+      assert.equal(ui.canDeleteTask({ status, ...extra }), false, status + JSON.stringify(extra));
+    }
+    assert.equal(ui.canDeleteTask({ status, dispatchState: null, lastRejectedSubmission: {} }), true);
+  }
+});
+
+test('review and terminal records remain removable even when past delivery evidence is present', () => {
+  for (const status of ['needs_review', 'completed', 'failed', 'cancelled']) {
+    assert.equal(ui.canDeleteTask({ status, submissionReceipt: {}, turnId: 'past-turn', dispatchState: 'submitted' }), true, status);
+  }
+});
+
+test('deletion confirmation distinguishes unsent, historical and uncertain deliveries without promising a retraction', () => {
+  const scheduled = ui.taskDeleteConfirmation({ status: 'waiting_quota' });
+  assert.match(scheduled.description, /不再自动发送/);
+  const completed = ui.taskDeleteConfirmation({ status: 'completed' });
+  assert.match(completed.description, /执行结果/);
+  const uncertain = ui.taskDeleteConfirmation({ status: 'needs_review', dispatchState: 'intent' });
+  assert.match(uncertain.title, /待核对/);
+  assert.match(uncertain.description, /可能已经发送/);
+  assert.match(uncertain.description, /删除后无法恢复/);
+  assert.match(uncertain.description, /不再跟踪结果/);
+  assert.match(uncertain.description, /不会停止/);
+  for (const status of ['scheduled', 'completed', 'needs_review']) {
+    const { note } = ui.taskDeleteConfirmation({ status });
+    assert.match(note, /不删除 Codex 对话/);
+    assert.match(note, /不撤回或删除已经发出的消息/);
+  }
+});
 test('countdown rounds up, never becomes negative, and ticks through minute boundaries', () => {
   const now = Date.parse('2026-10-20T10:00:00Z');
   assert.equal(ui.remainingTime(now + 60500, now), '1 分 1 秒');

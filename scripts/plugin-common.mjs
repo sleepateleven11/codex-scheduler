@@ -75,7 +75,8 @@ export async function writeDistribution(destination, { sourceRoot = ROOT, files 
   return files;
 }
 
-export async function stageInstallationSource({ sourceRoot = ROOT, dataDir = getPaths().dataDir, nodePath = process.execPath } = {}) {
+export async function stageInstallationSource({ sourceRoot = ROOT, dataDir = getPaths().dataDir, nodePath = process.execPath,
+  platform = process.platform, rename = fs.rename, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const { manifest } = await inspectSchedulerSource(sourceRoot);
   const files = await distributionPayload(sourceRoot);
   const hash = createHash('sha256');
@@ -90,17 +91,31 @@ export async function stageInstallationSource({ sourceRoot = ROOT, dataDir = get
     parent = next;
   }
   const stagedRoot = path.join(parent, `${manifest.version}-${digest.slice(0, 16)}`);
-  const existing = await fs.lstat(stagedRoot).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
-  if (existing) {
+  async function verifiedExistingSource() {
+    const existing = await fs.lstat(stagedRoot).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (!existing) return false;
     if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error('本机插件安装副本不是有效目录，原文件已保留。');
     await inspectSchedulerSource(stagedRoot);
     const previousFiles = await distributionPayload(stagedRoot);
     if (previousFiles.length !== files.length || files.some((file, index) => file.name !== previousFiles[index].name || !file.bytes.equals(previousFiles[index].bytes))) throw new Error('本机插件安装副本内容不符，原文件已保留。');
-  } else {
+    return true;
+  }
+  if (!await verifiedExistingSource()) {
     const temporary = await fs.mkdtemp(path.join(parent, '.install-'));
     try {
       await writeDistribution(temporary, { files });
-      await fs.rename(temporary, stagedRoot);
+      for (let attempt = 0; attempt < 10; attempt++) {
+        // Windows scanners can briefly hold a just-written directory. Retry
+        // only these sharing/permission errors, without deleting a target or
+        // terminating processes. A concurrent target must pass full identity
+        // and payload verification before it can be reused.
+        if (await verifiedExistingSource()) break;
+        try { await rename(temporary, stagedRoot); break; }
+        catch (error) {
+          if (platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt === 9) throw error;
+          await delay(Math.min(100 * (attempt + 1), 500));
+        }
+      }
     } finally {
       if (samePath(path.dirname(temporary), parent) && path.basename(temporary).startsWith('.install-')) await fs.rm(temporary, { recursive: true, force: true });
     }

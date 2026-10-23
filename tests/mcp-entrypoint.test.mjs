@@ -38,7 +38,7 @@ test('real MCP initialize registers genuine host context without a tools/call or
   const dir = await directory(t);
   const request = await mcp(t, dir, { CODEX_THREAD_ID: SOURCE, CODEX_APP_TOOLS_PIPE_PATH: PIPE });
   const initialized = await request('initialize', { protocolVersion: '2024-11-05', capabilities: {} });
-  assert.equal(initialized.result.serverInfo.version, '0.3.1');
+  assert.equal(initialized.result.serverInfo.version, '0.3.2');
   assert.ok(initialized.result.capabilities.resources);
   const descriptor = JSON.parse(await fs.readFile(path.join(dir, 'desktop-connection.json'), 'utf8'));
   assert.equal(descriptor.sourceThreadId, SOURCE); assert.equal(descriptor.pipePath, PIPE);
@@ -69,7 +69,7 @@ test('MCP advertises and forwards an explicitly authorized quota trigger without
   const submissions = [];
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.3.1', status: 'running' } }));
+    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.3.2', status: 'running' } }));
     assert.equal(req.url, '/api/tasks');
     assert.equal(req.method, 'POST');
     const chunks = [];
@@ -94,6 +94,33 @@ test('MCP advertises and forwards an explicitly authorized quota trigger without
   assert.ok(!response.result.isError);
   assert.deepEqual(submissions, [args]);
   assert.equal(JSON.parse(response.result.content[0].text).task.sendMode, 'quota_available');
+});
+
+test('MCP advertises destructive local deletion and forwards it using the DELETE API', async t => {
+  const dir = await directory(t);
+  const calls = [];
+  const id = '44444444-4444-4444-8444-444444444444';
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.3.2', status: 'running' } }));
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    calls.push({ method: req.method, url: req.url, body: Buffer.concat(chunks).toString() });
+    res.end(JSON.stringify({ deleted: true, id }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await fs.writeFile(path.join(dir, 'endpoint.json'), JSON.stringify({ port: server.address().port, token: 'b'.repeat(64) }));
+  const request = await mcp(t, dir);
+  await request('initialize', { protocolVersion: '2024-11-05' });
+  const tool = (await request('tools/list')).result.tools.find(tool => tool.name === 'scheduler_action');
+  assert.ok(tool.inputSchema.properties.action.enum.includes('delete'));
+  assert.equal(tool.annotations.destructiveHint, true);
+  assert.match(tool.description, /不撤回已发送消息/);
+  const response = await request('tools/call', { name: 'scheduler_action', arguments: { id, action: 'delete' } });
+  assert.ok(!response.result.isError);
+  assert.deepEqual(JSON.parse(response.result.content[0].text), { deleted: true, id });
+  assert.deepEqual(calls, [{ method: 'DELETE', url: '/api/tasks/' + id, body: '' }]);
 });
 
 test('global MCP initialization after a desktop restart renews the endpoint while keeping the saved genuine source', async t => {

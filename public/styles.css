@@ -96,6 +96,8 @@ h1 { margin: 0; color: var(--muted); font-size: 27px; font-weight: 700; line-hei
 .button-primary { color: #fff; background: var(--purple); box-shadow: 0 3px 7px #7258cf19; }
 .button-primary:not(:disabled):hover { background: var(--purple-dark); box-shadow: 0 4px 10px #7258cf28; }
 .button-primary:disabled { background: #a7a0bc; opacity: .72; }
+.button-danger { color: #fff; background: var(--red); border-color: var(--red); }
+.button-danger:not(:disabled):hover { background: #913b4d; border-color: #913b4d; }
 .refresh-button { flex-shrink: 0; min-width: 84px; }
 .text-button { border: 0; border-radius: 4px; padding: 2px 0; color: var(--text); background: transparent; font-size: 12px; line-height: 1.5; white-space: nowrap; }
 .text-button:not(:disabled):hover { color: var(--purple); text-decoration: underline; text-underline-offset: 3px; }
@@ -319,6 +321,9 @@ fieldset:disabled { opacity: .6; }
 .task-action:not(:disabled):hover { color: var(--text); background: #f7f2fd; border-color: #c8b4dc; }
 .task-action.cancel { color: var(--muted); background: transparent; border-color: transparent; }
 .task-action.cancel:not(:disabled):hover { color: var(--red); background: #fdf0f3; border-color: #f0dde3; }
+.task-action.delete { color: var(--red); background: transparent; border-color: transparent; }
+.task-action.delete:not(:disabled):hover { color: #913b4d; background: #fff1f4; border-color: #edd2da; }
+.task-action.delete:disabled { color: var(--muted); }
 .task-progress-note { color: var(--purple); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .task-list:focus-visible { outline: 2px solid #bca9db; outline-offset: -5px; border-radius: 9px; }
 .empty-state, .loading-state { display: flex; flex: 1 1 auto; align-items: center; justify-content: center; flex-direction: column; min-height: 330px; padding: 36px 24px; text-align: center; }
@@ -364,6 +369,8 @@ fieldset:disabled { opacity: .6; }
 .confirm-dialog h2 { margin: 0; font-size: 20px; }
 .confirm-dialog p { margin: 14px 0 0; color: var(--muted); font-size: 13px; line-height: 1.9; overflow-wrap: anywhere; }
 .confirm-dialog .dialog-note { margin-top: 12px; padding: 10px 12px; border: 1px solid #f0e6d5; border-radius: 8px; color: var(--orange); background: #fffbf4; font-size: 12px; line-height: 1.8; }
+.confirm-dialog .dialog-target { margin-top: 12px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: #f7f8fb; color: #556176; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.delete-dialog .dialog-icon { color: var(--red); background: #fceef1; }
 .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
 .dialog-actions .button { min-height: 40px; }
 

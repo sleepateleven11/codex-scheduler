@@ -7,6 +7,28 @@
   function canEditTask(task) {
     return editable.has(task.status) && !task.submissionReceipt && !task.turnId && !["intent", "submitted"].includes(task.dispatchState);
   }
+  function taskDeleteBlockReason(task = {}) {
+    const status = task.status || task.state;
+    if (status === "running") return "任务正在运行或派发中，请等待执行结束后再删除。";
+    if (!["scheduled", "waiting_quota", "waiting_thread", "paused", "completed", "failed", "cancelled", "needs_review"].includes(status)) return "当前任务状态暂不支持删除，请刷新任务列表。";
+    if (["scheduled", "waiting_quota", "waiting_thread", "paused"].includes(status)
+      && (task.submissionReceipt || task.turnId || ["intent", "submitted"].includes(task.dispatchState))) return "这项任务已经提交或正在派发，暂不能删除。请先核对目标对话并刷新列表。";
+    return "";
+  }
+  function canDeleteTask(task) { return !taskDeleteBlockReason(task); }
+  function taskDeleteConfirmation(task = {}) {
+    const status = task.status || task.state;
+    const description = status === "needs_review"
+      ? "这项任务可能已经发送到 Codex，当前结果尚未确认。删除后无法恢复，也不再跟踪结果；不会停止对话中已经开始的工作。"
+      : ["scheduled", "waiting_quota", "waiting_thread", "paused"].includes(status)
+        ? "删除后，这项等待发送的任务将从队列移除，不再自动发送。删除后无法恢复。"
+        : "将永久移除此电脑上的任务记录及其执行结果，删除后无法恢复。";
+    return {
+      title: status === "needs_review" ? "删除结果待核对的任务？" : "删除这项任务？",
+      description,
+      note: "只删除本地任务记录，不删除 Codex 对话，也不撤回或删除已经发出的消息。",
+    };
+  }
   function secondsLeft(value, now = Date.now()) {
     if (!value) return null;
     const time = typeof value === "number" ? value : Date.parse(value);
@@ -128,5 +150,5 @@
     if (thread && threadProviderStatus(thread).compatible === false) return threadProviderStatus(thread).issue;
     return diagnosticsBlockReason(diagnostics);
   }
-  globalThis.SchedulerUI = Object.freeze({ canEditTask, secondsLeft, remainingTime, taskSendMode, quotaTriggerHint, taskTriggerText, taskCountdown, pickPreferences, taskNotice, threadTime, shortThreadIds, threadOptions, matchingThreads, threadProviderStatus, diagnosticsBlockReason, submissionBlockReason });
+  globalThis.SchedulerUI = Object.freeze({ canEditTask, canDeleteTask, taskDeleteBlockReason, taskDeleteConfirmation, secondsLeft, remainingTime, taskSendMode, quotaTriggerHint, taskTriggerText, taskCountdown, pickPreferences, taskNotice, threadTime, shortThreadIds, threadOptions, matchingThreads, threadProviderStatus, diagnosticsBlockReason, submissionBlockReason });
 })();

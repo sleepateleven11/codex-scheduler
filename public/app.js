@@ -12,6 +12,7 @@
     reconnecting: false, noticeTaskId: null, loadedTasks: false,
     diagnostics: null, checkingSetup: false, setupReported: false, diagnosticsSignature: "",
     pendingActions: new Map(), threadError: null, selectedThreadId: "", renderedFilter: "active", bootstrapping: false,
+    deletedTaskIds: new Set(),
     alerts: { general: null, connection: null, desktop: null },
   };
   const labels = {
@@ -533,15 +534,17 @@
   function modelName(id) { const model = state.models.find((item) => item.id === id); return model?.displayName || model?.name || id || "默认模型"; }
   function actionButton(task, action, title, className = "") {
     const pending = state.actionPending.has(task.id) && state.pendingActions.get(task.id) === action;
-    const busyLabels = { pause: "暂停中…", resume: "恢复中…", cancel: "取消中…", retry: "重试中…", edit: "载入中…", copy: "复制中…" };
+    const busyLabels = { pause: "暂停中…", resume: "恢复中…", cancel: "取消中…", retry: "重试中…", edit: "载入中…", copy: "复制中…", delete: "删除中…" };
     const button = element("button", "task-action " + className + (pending ? " is-loading" : ""), pending ? busyLabels[action] || "处理中…" : title);
     button.type = "button";
     button.dataset.taskId = task.id;
     button.dataset.action = action;
-    button.disabled = state.actionPending.has(task.id) || !state.connected || (["copy", "edit"].includes(action) && (state.submitting || state.loadingDraft || state.checkingSetup));
+    const deleteBlocked = action === "delete" ? ui.taskDeleteBlockReason(task) : "";
+    button.disabled = state.actionPending.has(task.id) || !state.connected || !!deleteBlocked || (["copy", "edit", "delete"].includes(action) && (state.submitting || state.loadingDraft || state.checkingSetup));
     button.setAttribute("aria-busy", String(pending));
     button.setAttribute("aria-label", (pending ? busyLabels[action] || title : title) + "：" + (task.title || task.prompt || "定时任务").split("\n")[0].slice(0, 80));
     if (!state.connected) button.title = "连接恢复后可操作，任务记录已保留。";
+    else if (deleteBlocked) button.title = deleteBlocked;
     button.addEventListener("click", () => actOnTask(task, action));
     return button;
   }
@@ -598,6 +601,7 @@
     else if (!terminal.has(status) && status !== "running") actions.append(actionButton(task, "pause", "暂停"));
     if (!terminal.has(status) && status !== "running") actions.append(actionButton(task, "cancel", "取消", "cancel"));
     if (status === "running") actions.append(element("span", "task-progress-note", awaitingDesktopStart ? "已交给 Codex，等待开始" : "请在对话中查看进度"));
+    actions.append(actionButton(task, "delete", "删除", "delete"));
     bottom.append(details, actions);
     card.append(bottom);
     return card;
@@ -611,6 +615,9 @@
     if (state.quota?.allowed === false && state.quota.resetAt) renderQuota();
   }
   function receiveTasks(tasks) {
+    // An older poll may finish after DELETE. Never restore a record removed in
+    // this session merely because that stale snapshot arrived later.
+    tasks = tasks.filter((task) => !state.deletedTaskIds.has(task.id));
     if (state.loadedTasks) {
       const previous = new Map(state.tasks.map((task) => [task.id, task]));
       const notices = tasks.map((task) => ({ task, notice: ui.taskNotice(previous.get(task.id), task) })).filter((item) => item.notice);
@@ -625,7 +632,8 @@
     state.tasks = tasks;
     state.loadedTasks = true;
     const editing = tasks.find((task) => task.id === state.editingId);
-    if (state.editingId && (!editing || !ui.canEditTask(editing))) {
+    if (state.editingId && !editing) retainDraftAfterDeletion(state.editingId);
+    else if (state.editingId && !ui.canEditTask(editing)) {
       $("submit-button").disabled = true;
       $("form-error").textContent = "这个任务已开始处理，无法再修改。你输入的内容仍在表单中，可点击“保留为新草稿”。";
       $("form-error").hidden = false;
@@ -684,6 +692,7 @@
   }
   function setComposerMode() {
     const editing = !!state.editingId;
+    const deletingEditedTask = editing && state.pendingActions.get(state.editingId) === "delete";
     $("compose-title").textContent = editing ? "编辑定时任务" : "安排一个任务";
     $("compose-kicker").textContent = editing ? "修改任务" : "新建任务";
     $("submit-button").querySelector("span").textContent = state.submitting ? editing ? "正在保存…" : "正在创建…" : state.loadingDraft ? "正在载入…" : editing ? "保存修改" : $("quota-trigger").checked ? "创建额度任务" : "创建定时任务";
@@ -691,10 +700,11 @@
     $("submit-button").setAttribute("aria-busy", String(state.submitting || state.loadingDraft));
     $("schedule-form").setAttribute("aria-busy", String(state.submitting || state.loadingDraft));
     $("cancel-edit").hidden = !editing;
+    $("cancel-edit").disabled = state.submitting || state.loadingDraft || deletingEditedTask;
     $("cancel-edit").textContent = "取消编辑";
     const editingLocked = editing && !ui.canEditTask(state.tasks.find((task) => task.id === state.editingId) || {});
     const blocked = ui.submissionBlockReason({ connected: state.connected, diagnostics: state.diagnostics, thread: state.threads.find((thread) => thread.id === $("thread-select").value) });
-    $("submit-button").disabled = state.submitting || state.loadingDraft || state.loadingThreads || state.checkingSetup || state.bootstrapping || editingLocked || !!blocked;
+    $("submit-button").disabled = state.submitting || state.loadingDraft || state.loadingThreads || state.checkingSetup || state.bootstrapping || deletingEditedTask || editingLocked || !!blocked;
     $("submission-help").hidden = !blocked;
     const providerBlocked = state.threads.find((thread) => thread.id === $("thread-select").value)?.providerCompatible === false;
     $("submission-help").textContent = providerBlocked ? "所选对话暂不能发送，请在上方选择 OpenAI 对话。" : blocked;
@@ -761,7 +771,7 @@
     }
   }
   async function cancelEdit() {
-    if (!state.editingId || state.submitting || state.loadingDraft) return;
+    if (!state.editingId || state.submitting || state.loadingDraft || state.pendingActions.get(state.editingId) === "delete") return;
     const current = state.tasks.find((task) => task.id === state.editingId);
     const snapshot = state.draftSnapshot;
     const keepDraft = !current || !ui.canEditTask(current);
@@ -780,19 +790,98 @@
     }
     setComposerMode();
   }
-  function confirmRetry() {
-    const dialog = $("retry-dialog");
-    if (!dialog || typeof dialog.showModal !== "function") return Promise.resolve(window.confirm("上次发送结果未能确认，重试可能发送重复消息。请先核对目标对话，确认仍需再次发送吗？"));
-    if (dialog.open) return Promise.resolve(false);
+  function taskActionFocus(taskId, action) {
+    const buttons = Array.from(document.querySelectorAll(".task-action"));
+    return buttons.find((button) => button.dataset.taskId === taskId && button.dataset.action === action && !button.disabled)
+      || Array.from(document.querySelectorAll(".task-details")).find((node) => node.dataset.taskId === taskId)?.querySelector("summary")
+      || $("task-filters").querySelector(".active");
+  }
+  function confirmTaskAction(dialogId, acceptedValue, fallback) {
+    const dialog = $(dialogId);
+    if (!dialog || typeof dialog.showModal !== "function") return Promise.resolve(window.confirm(fallback));
+    if (document.querySelector(".confirm-dialog[open]")) return Promise.resolve(false);
+    const origin = document.activeElement?.dataset;
+    const originId = origin?.taskId;
+    const originAction = origin?.action;
     return new Promise((resolve) => {
       dialog.returnValue = "cancel";
-      dialog.addEventListener("close", () => resolve(dialog.returnValue === "retry"), { once: true });
+      dialog.addEventListener("close", () => {
+        if (originId) taskActionFocus(originId, originAction)?.focus({ preventScroll: true });
+        resolve(dialog.returnValue === acceptedValue);
+      }, { once: true });
       dialog.showModal();
     });
+  }
+  function confirmRetry() {
+    return confirmTaskAction("retry-dialog", "retry", "上次发送结果未能确认，重试可能发送重复消息。请先核对目标对话，确认仍需再次发送吗？");
+  }
+  function confirmDeletion(task) {
+    const copy = ui.taskDeleteConfirmation(task);
+    $("delete-dialog-title").textContent = copy.title;
+    $("delete-dialog-description").textContent = copy.description;
+    $("delete-dialog-note").textContent = copy.note;
+    $("delete-dialog-target").textContent = (task.title || task.prompt || "定时任务").trim().split("\n")[0].slice(0, 180);
+    return confirmTaskAction("delete-dialog", "delete", copy.title + "\n\n" + copy.description + "\n\n" + copy.note);
+  }
+  function retainDraftAfterDeletion(taskId) {
+    if (state.editingId !== taskId) return;
+    state.editingId = null;
+    state.draftSnapshot = null;
+    state.pendingCreation = null;
+    $("form-error").hidden = true;
+    $("draft-note").textContent = "原任务已删除。表单内容已保留为新草稿，只有再次点击创建按钮才会加入队列。";
+    $("draft-note").hidden = false;
+  }
+  async function deleteTask(task) {
+    if (state.submitting || state.loadingDraft || state.checkingSetup) return;
+    let current = state.tasks.find((item) => item.id === task.id);
+    if (!current) return;
+    const blocked = ui.taskDeleteBlockReason(current);
+    if (blocked) { toast(blocked, true); return; }
+    if (!await confirmDeletion(current)) return;
+    current = state.tasks.find((item) => item.id === task.id);
+    if (!current) { toast("这项任务已经从列表移除。"); return; }
+    const changed = ui.taskDeleteBlockReason(current);
+    if (changed) { toast(changed, true); return; }
+    if (state.actionPending.has(task.id) || state.submitting || state.loadingDraft || state.checkingSetup || !state.connected) return;
+    const visibleCards = Array.from($("task-list").children);
+    const previousIndex = visibleCards.findIndex((card) => card.dataset.taskId === task.id);
+    state.actionPending.add(task.id);
+    state.pendingActions.set(task.id, "delete");
+    setComposerMode();
+    try {
+      await api("/api/tasks/" + encodeURIComponent(task.id), { method: "DELETE" });
+      state.deletedTaskIds.add(task.id);
+      retainDraftAfterDeletion(task.id);
+      state.tasks = state.tasks.filter((item) => item.id !== task.id);
+      if (state.noticeTaskId === task.id) { state.noticeTaskId = null; $("task-notice").hidden = true; }
+      showAlert("", "warning", "general");
+      renderTasks(true);
+      setComposerMode();
+      const focused = document.activeElement;
+      if (focused === document.body || focused === $("task-list") || focused?.closest(".task-card")?.dataset.taskId === task.id) {
+        const cards = Array.from($("task-list").children);
+        const next = cards[Math.min(Math.max(previousIndex, 0), cards.length - 1)];
+        (next ? taskActionFocus(next.dataset.taskId, "delete") : $("task-filters").querySelector(".active"))?.focus({ preventScroll: true });
+      }
+      toast("任务已删除；Codex 对话和已发出的消息会保留。");
+      await poll(true);
+    } catch (error) {
+      showAlert(error.code === "task_busy" ? "任务已经开始运行或派发，暂不能删除。记录已保留，请等待执行结束后再操作。"
+        : error.code === "deletion_persist_failed" ? "删除未能保存，任务记录已保留，调度已暂停。请再次点击删除以重试。"
+          : "删除未能确认：" + readableError(error), "error", "general");
+      await poll(true);
+    } finally {
+      state.actionPending.delete(task.id);
+      state.pendingActions.delete(task.id);
+      renderTasks();
+      setComposerMode();
+    }
   }
   async function actOnTask(task, action) {
     if (state.actionPending.has(task.id)) return;
     if (!state.connected) { toast("连接恢复后可操作，任务记录已保留。", true); return; }
+    if (action === "delete") return deleteTask(task);
     if (action === "edit" || action === "copy") {
       state.pendingActions.set(task.id, action);
       try { return await draftTask(task, action === "edit"); }
@@ -840,6 +929,7 @@
     const editingId = state.editingId;
     try {
       if (state.loadingDraft) return;
+      if (editingId && state.pendingActions.get(editingId) === "delete") throw new Error("原任务正在删除，请稍候；表单内容会保留为新草稿。");
       if (state.checkingSetup || state.loadingThreads) throw new Error("正在检查配置或读取对话，请稍候。");
       const blocked = ui.submissionBlockReason({ connected: state.connected, diagnostics: state.diagnostics, thread: state.threads.find((thread) => thread.id === $("thread-select").value) });
       if (blocked) throw new Error(blocked);

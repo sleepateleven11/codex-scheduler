@@ -10,7 +10,7 @@ import { PreferencesStore } from './preferences.mjs';
 import { DiagnosticsService } from './diagnostics.mjs';
 
 const paths = getPaths();
-const version = '0.3.1';
+const version = '0.3.2';
 const preferences = new PreferencesStore(paths.configPath);
 const startedAt = new Date().toISOString();
 let lockHandle; let server; let mutexServer; let queue; let adapter; let diagnostics; let endpoint; let stopping = false;
@@ -118,12 +118,14 @@ async function route(request, response) {
     const actionMatch = /^\/api\/tasks\/([a-f0-9-]+)\/action$/.exec(url.pathname);
     if (request.method === 'POST' && actionMatch) {
       const input = await body(request); const id = actionMatch[1];
-      if (!['pause', 'resume', 'cancel', 'retry'].includes(input.action)) throw new Error('不支持的操作。');
+      if (!['pause', 'resume', 'cancel', 'retry', 'delete'].includes(input.action)) throw new Error('不支持的操作。');
       if (input.action === 'retry') await adapter.validateTask(queue.get(id));
+      if (input.action === 'delete') return json(response, 200, await queue.delete(id));
       const task = await queue[input.action](id, { acknowledgeDuplicateRisk: input.acknowledgeDuplicateRisk === true });
       return json(response, 200, { task });
     }
     const taskMatch = /^\/api\/tasks\/([a-f0-9-]+)$/.exec(url.pathname);
+    if (request.method === 'DELETE' && taskMatch) return json(response, 200, await queue.delete(taskMatch[1]));
     if (request.method === 'PATCH' && taskMatch) {
       const patch = await body(request); const validated = await adapter.validateTask({ ...queue.get(taskMatch[1]), ...patch });
       return json(response, 200, { task: await queue.update(taskMatch[1], { ...patch, executionPath: validated.executionPath, projectLabel: validated.projectLabel, threadTitle: validated.threadTitle }) });
@@ -172,7 +174,7 @@ try {
   queue = new QueueManager({ storePath: paths.storePath, adapter, maxConcurrent: 1 });
   await queue.initialize();
   const token = randomBytes(32).toString('hex');
-  server = http.createServer((request, response) => { void route(request, response).catch(error => { if (!response.headersSent) json(response, 400, { error: 'operation_failed', message: error.message }); else response.destroy(); }); });
+  server = http.createServer((request, response) => { void route(request, response).catch(error => { if (!response.headersSent) json(response, [409, 503].includes(error.statusCode) ? error.statusCode : 400, { error: ['task_busy', 'creation_deleted', 'deletion_persist_failed'].includes(error.code) ? error.code : 'operation_failed', message: error.message }); else response.destroy(); }); });
   server.requestTimeout = 60000;
   server.headersTimeout = 15000;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });

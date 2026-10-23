@@ -158,6 +158,47 @@ await finish();
 `);
 });
 
+test('task deletion API is authenticated, durable, idempotent, and protects uncertain dispatches', { timeout: 8000 }, async t => {
+  await runScenario(t, `
+const now = new Date().toISOString();
+const scheduled = {
+  id: '11111111-1111-4111-8111-111111111111', projectPath: 'C:\\\\fixture',
+  threadId: 'fixture-thread', model: 'fixture-model', prompt: 'Private pending prompt.',
+  status: 'scheduled', runAt: '2099-01-01T00:00:00.000Z', createdAt: now, updatedAt: now,
+  attempts: 0, clientRequestId: 'pending-request', timeZone: 'UTC',
+};
+const history = { ...scheduled, id: '22222222-2222-4222-8222-222222222222', status: 'completed', prompt: 'Private history.', result: 'Private output.', clientRequestId: 'history-request' };
+const protectedTask = { ...scheduled, id: '33333333-3333-4333-8333-333333333333', status: 'paused', prompt: 'Protected pending prompt.', dispatchState: 'intent', clientRequestId: 'protected-request' };
+const queueFile = path.join(dataDir, 'queue.json');
+await fs.writeFile(queueFile, JSON.stringify({ version: 1, tasks: [scheduled, history, protectedTask] }));
+const endpoint = await ensureDaemon();
+const origin = 'http://127.0.0.1:' + endpoint.port;
+const headers = { Authorization: 'Bearer ' + endpoint.token, 'Content-Type': 'application/json' };
+const destination = origin + '/api/tasks/' + scheduled.id;
+assert.equal((await fetch(destination, { method: 'DELETE' })).status, 401);
+assert.equal((await fetch(destination, { method: 'DELETE', headers: { ...headers, Origin: 'https://example.com' } })).status, 403);
+assert.equal(JSON.parse(await fs.readFile(queueFile, 'utf8')).tasks.length, 3);
+const removed = await fetch(destination, { method: 'DELETE', headers });
+assert.equal(removed.status, 200);
+assert.deepEqual(await removed.json(), { deleted: true, id: scheduled.id });
+const onceDeleted = await fs.readFile(queueFile, 'utf8');
+assert.ok(!onceDeleted.includes(scheduled.prompt));
+assert.ok(!onceDeleted.includes(scheduled.clientRequestId));
+assert.equal((await fetch(destination, { method: 'DELETE', headers })).status, 200);
+assert.equal(await fs.readFile(queueFile, 'utf8'), onceDeleted);
+const action = await fetch(origin + '/api/tasks/' + history.id + '/action', { method: 'POST', headers, body: JSON.stringify({ action: 'delete' }) });
+assert.equal(action.status, 200);
+assert.deepEqual(await action.json(), { deleted: true, id: history.id });
+const rejected = await fetch(origin + '/api/tasks/' + protectedTask.id, { method: 'DELETE', headers });
+assert.equal(rejected.status, 409);
+assert.equal((await rejected.json()).error, 'task_busy');
+const finalDocument = JSON.parse(await fs.readFile(queueFile, 'utf8'));
+assert.deepEqual(finalDocument.tasks.map(task => task.id), [protectedTask.id]);
+assert.equal(finalDocument.deletedRequestHashes.length, 2);
+await finish();
+`);
+});
+
 test('concurrent startup recovers a dead worker lock with one owner', { timeout: 8000 }, async t => {
   await runScenario(t, `
 const lockFile = path.join(dataDir, 'worker.lock');
