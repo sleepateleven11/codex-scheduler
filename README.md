@@ -1,12 +1,12 @@
 # Codex Scheduler
 
-Codex 桌面本地插件，当前版本 0.3.0。选择项目、已有对话、GPT 模型、思考强度和发送时间；到时通过 Codex 自带的桌面工具服务继续原对话。额度不足时保留任务，等待恢复后执行。
+Codex 桌面本地插件，当前版本 0.3.1。选择项目、已有对话、GPT 模型、思考强度和发送时间；到时通过 Codex 自带的桌面工具服务继续原对话。额度不足时保留任务，等待恢复后执行。
 
-下载安装包：[GitHub Releases](https://github.com/sleepateleven11/codex-scheduler/releases/latest)。请下载 Release 中的 `codex-scheduler-0.3.0.zip`，完整解压后运行“安装插件.cmd”。
+下载安装包：[GitHub Releases](https://github.com/sleepateleven11/codex-scheduler/releases/latest)。请下载 Release 中的 `codex-scheduler-0.3.1.zip`，完整解压后运行“安装插件.cmd”。
 
 ## 发给别人或换电脑安装
 
-可以分享 `codex-scheduler-0.3.0.zip`。接收者使用自己的 Codex、ChatGPT 登录、项目和对话，不需要你的账号、API Key 或安装路径。目前分发版支持 Windows，需要 Node.js 22 或更高版本。
+可以分享 `codex-scheduler-0.3.1.zip`。接收者使用自己的 Codex、ChatGPT 登录、项目和对话，不需要你的账号、API Key 或安装路径。目前分发版支持 Windows，需要 Node.js 22 或更高版本。
 
 1. 在新电脑安装并启动 Codex 桌面，登录自己的 ChatGPT 账号，添加本地项目并建立一个使用 OpenAI 服务商的对话。
 2. 安装 Node.js 22 或更高版本；把 ZIP **全部解压缩**后，双击文件夹里的 **“安装插件.cmd”**。如果提示旧版 Node 或缺少 Codex，先完成提示的安装步骤再运行。
@@ -48,6 +48,12 @@ npm run install:plugin -- --dry-run
 更新包解压到新目录时，直接在新目录运行安装器即可。安装器先验证旧来源属于 `codex-scheduler@local-scheduler` 后迁移。旧解压目录已删除时，还须以已启用的专用插件注册和对应版本缓存验证身份；无法确认、身份不符或同一来源包含其他插件时，会保留原注册并报错。不会覆盖无关的同名来源。
 
 重新安装或升级前会停止旧后台继续派发任务。如果当前一轮仍在执行，安装器会保留现有插件并提示等这一轮结束后重新运行；不会中断当前轮来覆盖缓存。
+
+## 0.3.1 界面改进
+
+管理器统一了字号、配色、间距和组件状态。创建表单按目标、执行方式、消息内容分组；桌面任务区独立滚动，窄窗口提供任务区域快捷跳转。长结果可展开查看，不挤压操作按钮；搜索和刷新对话不会静默丢失当前目标，读取失败与空数据有明确区分。
+
+创建、检测和任务操作会显示加载状态，禁用控件与加载控件采用不同反馈。重试结果不明的消息时，使用支持键盘与 Escape 的确认弹窗。任务数据、服务商校验和发送逻辑保持原有规则。
 
 ## 日常使用
 

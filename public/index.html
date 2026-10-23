@@ -1,86 +1,67 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#f6f7fa" />
-    <title>时序 · Codex 定时任务</title>
-    <link rel="stylesheet" href="/styles.css" />
-    <script src="/ui-helpers.js" defer></script>
-    <script src="/app.js" defer></script>
-  </head>
-  <body>
-    <div class="app-shell">
-      <aside class="sidebar" aria-label="应用导航">
-        <a class="brand" href="#main" aria-label="时序首页">
-          <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M9 6h14M9 26h14M11 6v5l10 10v5M21 6v5L11 21v5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-          <span>时序<span class="brand-caption">CODEX SCHEDULER</span></span>
-        </a>
-        <div class="sidebar-divider"></div>
-        <a class="nav-item active" href="#main" aria-current="page"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4M17 3v4M3 11h18M8 15h2M14 15h2"/></svg><span>定时任务</span><span id="nav-count" class="nav-count">0</span></a>
-        <div class="sidebar-note"><span class="tiny-label">让任务按时开始</span><p>安排好下一步，<br />把等待留给时序。</p><div class="orbit-art" aria-hidden="true"><span class="orbit-dot"></span><span class="orbit-core">✦</span></div></div>
-        <div class="sidebar-bottom"><span id="connection-dot" class="connection-dot"></span><span id="connection-label">正在连接</span><span class="version">v0.3.0</span></div>
-      </aside>
-
-      <main id="main" class="main-content">
-        <header class="page-header"><div><p class="eyebrow">YOUR TIME, WELL PLANNED</p><h1>让下一步，准时发生。</h1><p class="header-description">选好对话、模型和时间，剩下的交给任务队列。</p></div><button type="button" id="refresh-button" class="button button-secondary refresh-button"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.5 6M20 4v7h-7"/></svg><span>刷新</span></button></header>
-
-        <div id="global-alert" class="alert" role="status" aria-live="polite" hidden></div>
-
-        <section class="service-bar" aria-label="连接状态"><div class="service-item"><span id="background-dot" class="service-dot"></span><div><span class="service-name">任务后台</span><strong id="background-label">正在连接</strong></div></div><div class="service-item"><span id="desktop-dot" class="service-dot"></span><div><span class="service-name">Codex 发送服务</span><strong id="desktop-label">正在检查</strong></div></div><button type="button" id="reconnect-button" class="button button-secondary" hidden>重新连接</button><p id="service-help">任务会安全保留在此电脑。</p></section>
-        <details id="setup-panel" class="setup-panel" open>
-          <summary><span><strong>首次设置与连接自检</strong><span id="setup-summary" class="setup-summary" role="status" aria-live="polite">正在检查当前电脑…</span></span><span class="setup-toggle" aria-hidden="true">展开 / 收起</span></summary>
-          <div class="setup-body">
-            <p class="setup-scope">本版本通过你在 Codex 中登录的 ChatGPT 账号，向 OpenAI 对话发送消息。换电脑后需重新检查本机环境；无需填写或分享密钥。</p>
-            <ol class="setup-steps"><li>安装并打开 Codex，登录自己的 ChatGPT 账号。</li><li>在 Codex 中启用“时序”插件；首次安装后，在 Codex 的本地对话中说一次“打开定时任务管理器”以建立连接，以后可直接使用桌面图标。</li><li>添加本机项目，选择该项目中的 OpenAI 对话，再点击“重新检测”。</li></ol>
-            <div class="setup-check-header"><span id="setup-checked-at">检查不会创建任务或发送消息。</span><button type="button" id="diagnostics-button" class="button button-secondary">重新检测</button></div>
-            <ul id="setup-checks" class="setup-checks" aria-label="当前电脑的配置检查" aria-live="polite"></ul>
-            <p id="setup-error" class="setup-error" role="alert" hidden></p>
-          </div>
-        </details>
-        <div id="task-notice" class="alert success task-notice" role="status" aria-live="polite" hidden><span id="task-notice-text"></span><button type="button" id="notice-view">查看任务</button><button type="button" id="notice-dismiss" aria-label="关闭任务提醒">关闭</button></div>
-
-        <section class="overview-grid" aria-label="任务概览">
-          <article class="overview-card"><span class="overview-icon lavender"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 9h8M8 13h5M8 17h3"/></svg></span><div><p class="metric-label">未完成任务</p><p class="metric"><span id="pending-count">—</span><span class="metric-unit">项</span></p></div><span class="metric-decoration">QUEUE</span></article>
-          <article class="overview-card"><span class="overview-icon mint"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m7 12 3 3 7-7"/><circle cx="12" cy="12" r="9"/></svg></span><div><p class="metric-label">已完成</p><p class="metric"><span id="completed-count">—</span><span class="metric-unit">项</span></p></div><span class="metric-decoration">DONE</span></article>
-          <article class="overview-card quota-card"><span class="overview-icon sand"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m13 2-8 12h6l-1 8 9-12h-6l1-8"/></svg></span><div class="quota-content"><p class="metric-label">账号额度</p><p id="quota-label" class="quota-label">正在获取</p><p id="quota-description" class="quota-description">任务会在额度恢复后继续</p></div></article>
+<head>
+  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="color-scheme" content="light" /><meta name="theme-color" content="#f4f6f9" />
+  <title>时序 · Codex 定时任务</title><link rel="stylesheet" href="/styles.css" /><script src="/ui-helpers.js" defer></script><script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#schedule-form">跳到创建任务</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="应用导航">
+      <a class="brand" href="#main" aria-label="时序首页"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M9 6h14M9 26h14M11 6v5l10 10v5M21 6v5L11 21v5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-name">时序<span class="brand-caption">CODEX SCHEDULER</span></span></a>
+      <div class="sidebar-divider"></div>
+      <nav class="sidebar-nav" aria-label="管理器">
+        <a class="nav-item active" href="#main" aria-current="page" aria-label="定时任务" title="定时任务"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4M17 3v4M3 11h18M8 15h2M14 15h2"/></svg><span class="nav-label">定时任务</span><span id="nav-count" class="nav-count">0</span></a>
+        <button type="button" id="setup-nav-button" class="nav-item" aria-label="打开连接自检" title="连接自检" aria-controls="setup-panel"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 3v4M16 3v4M6 7h12v3a6 6 0 0 1-12 0V7ZM12 16v5"/></svg><span class="nav-label">连接自检</span></button>
+      </nav>
+      <div class="sidebar-tip"><span class="tiny-label">让等待有安排</span><p>保持 Codex 运行、电脑唤醒，任务就会按计划继续。</p></div>
+      <div class="sidebar-bottom"><span id="connection-dot" class="connection-dot"></span><span id="connection-label">正在连接</span><span class="version">v0.3.1</span></div>
+    </aside>
+    <main id="main" class="main-content">
+      <header class="page-header"><div><div class="page-title-row"><h1>定时任务</h1><span class="page-badge">本地队列</span></div><p class="header-description">安排下一条消息，让工作按计划继续。</p></div><button type="button" id="refresh-button" class="button button-secondary refresh-button" aria-label="刷新任务与连接状态"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.5 6M20 4v7h-7"/></svg><span>刷新</span></button></header>
+      <div id="global-alert" class="alert" role="status" aria-live="polite" hidden></div>
+      <section class="service-bar" aria-label="连接状态"><div class="service-item"><span id="background-dot" class="service-dot"></span><div><span class="service-name">任务后台</span><strong id="background-label">正在连接</strong></div></div><div class="service-item"><span id="desktop-dot" class="service-dot"></span><div><span class="service-name">Codex 发送服务</span><strong id="desktop-label">正在检查</strong></div></div><button type="button" id="reconnect-button" class="button button-secondary" hidden>重新连接</button><p id="service-help" class="service-copy">任务会安全保留在此电脑。</p></section>
+      <details id="setup-panel" class="setup-panel">
+        <summary><span class="setup-title"><strong>首次设置与连接自检</strong><span id="setup-summary" class="setup-summary" role="status" aria-live="polite">正在检查当前电脑…</span></span><span class="setup-toggle" aria-hidden="true"></span></summary>
+        <div class="setup-body"><p class="setup-scope">使用你在 Codex 中登录的 ChatGPT 账号，向 OpenAI 对话发送消息。换电脑后需重新检查，无需填写或分享密钥。</p><ol class="setup-steps"><li>打开 Codex，登录自己的 ChatGPT 账号。</li><li>首次安装后，在 Codex 的本地对话中通过时序插件打开一次任务管理器；之后可使用桌面图标。</li><li>添加本机项目，选择 OpenAI 对话，再重新检测。</li></ol><div class="setup-check-header"><span id="setup-checked-at">检查不会创建任务或发送消息。</span><button type="button" id="diagnostics-button" class="button button-secondary">重新检测</button></div><ul id="setup-checks" class="setup-checks" aria-label="当前电脑的配置检查"></ul><p id="setup-error" class="setup-error" role="alert" hidden></p></div>
+      </details>
+      <div id="task-notice" class="alert success task-notice" role="status" aria-live="polite" hidden><span id="task-notice-text"></span><button type="button" id="notice-view">查看任务</button><button type="button" id="notice-dismiss" aria-label="关闭任务提醒">关闭</button></div>
+      <section class="overview-grid" aria-label="任务概览">
+        <article class="overview-card"><span class="overview-icon lavender"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M8 9h8M8 13h5M8 17h3"/></svg></span><div><p class="metric-label">待处理任务</p><p class="metric"><span id="pending-count">—</span><span class="metric-unit">项</span></p></div></article>
+        <article class="overview-card"><span class="overview-icon mint"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m7 12 3 3 7-7"/><circle cx="12" cy="12" r="9"/></svg></span><div><p class="metric-label">已完成</p><p class="metric"><span id="completed-count">—</span><span class="metric-unit">项</span></p></div></article>
+        <article class="overview-card quota-card"><span class="overview-icon sand"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m13 2-8 12h6l-1 8 9-12h-6l1-8"/></svg></span><div class="quota-content"><p class="metric-label">账号额度</p><p id="quota-label" class="quota-label">正在获取</p><p id="quota-description" class="quota-description">任务会在额度恢复后继续</p></div></article>
+      </section>
+      <nav class="workspace-jumps" aria-label="工作区域"><a href="#compose-title">创建任务</a><a href="#queue-title">查看队列 <span id="queue-jump-count">0</span></a></nav>
+      <div class="work-grid">
+        <section class="panel composer-panel" aria-labelledby="compose-title">
+          <header class="panel-header"><div><span class="section-kicker" id="compose-kicker">新建任务</span><h2 id="compose-title">安排一个任务</h2><p class="composer-description">在已有对话中继续，保留原有上下文。</p></div></header>
+          <div id="draft-note" class="draft-note" role="status" hidden></div>
+          <form id="schedule-form" novalidate><fieldset id="schedule-fields" disabled>
+            <section class="form-section" aria-labelledby="target-heading">
+              <h3 class="form-section-heading" id="target-heading"><span class="form-step">1</span>目标对话</h3>
+              <div class="field"><label for="project-select">项目<span class="required-mark" aria-hidden="true">*</span></label><select id="project-select" name="projectPath" required><option value="">正在加载项目…</option></select></div>
+              <div class="field"><div class="field-label-row"><label for="thread-select">已有对话<span class="required-mark" aria-hidden="true">*</span></label><button type="button" id="refresh-threads" class="text-button" aria-label="刷新当前项目对话">刷新对话</button></div><div class="search-field"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="thread-search" autocomplete="off" placeholder="搜索标题、日期、编号或内容" aria-label="搜索已有对话的标题、日期、编号或内容" /></div><select id="thread-select" name="threadId" required aria-describedby="thread-help thread-details"><option value="">请先选择项目</option></select><p id="thread-help" class="field-help">选择项目后，即可查找已有对话。</p><div id="thread-details" class="thread-details" aria-live="polite" hidden></div></div>
+            </section>
+            <section class="form-section" aria-labelledby="execution-heading">
+              <h3 class="form-section-heading" id="execution-heading"><span class="form-step">2</span>模型与时间</h3>
+              <div class="form-row"><div class="field"><label for="model-select">模型<span class="required-mark" aria-hidden="true">*</span></label><select id="model-select" name="model" required><option value="">正在加载…</option></select></div><div class="field effort-field"><label for="effort-select">思考强度</label><select id="effort-select" name="effort"><option value="">默认</option></select></div></div>
+              <div class="field send-trigger-field"><div class="field-label-row"><label for="run-at">发送时间<span id="run-at-required" class="required-mark" aria-hidden="true">*</span></label></div><label class="quota-trigger-option" for="quota-trigger"><input type="checkbox" id="quota-trigger" aria-describedby="quota-trigger-help time-preview" /><span>额度可用时立即发送</span></label><p id="quota-trigger-help" class="field-help quota-trigger-help" hidden>保存后每 30 秒检测，额度可用时发送一次。</p><div id="scheduled-time-controls"><input type="datetime-local" id="run-at" name="runAt" required step="60" /><div class="quick-times" role="group" aria-label="快捷发送时间"><button type="button" data-minutes="5" aria-pressed="false">5 分钟后</button><button type="button" data-minutes="15" aria-pressed="false">15 分钟后</button><button type="button" data-minutes="30" aria-pressed="false">30 分钟后</button><button type="button" id="in-one-hour" data-minutes="60" aria-pressed="false">1 小时后</button></div><div class="timezone-row"><span>时区</span><select id="timezone-select" name="timeZone" aria-label="发送时间使用的时区"><option value="Asia/Shanghai">北京时间 · UTC+8</option><option value="Asia/Tokyo">东京时间</option><option value="Europe/London">伦敦时间</option><option value="America/New_York">纽约时间</option><option value="America/Los_Angeles">洛杉矶时间</option><option value="UTC">UTC</option></select></div></div><p id="time-preview" class="field-help">到达设定时间后进入执行队列。</p></div>
+            </section>
+            <section class="form-section" aria-labelledby="message-heading"><h3 class="form-section-heading" id="message-heading"><span class="form-step">3</span>消息内容</h3><div class="field prompt-field"><div class="field-label-row"><label for="prompt-input">发送内容<span class="required-mark" aria-hidden="true">*</span></label><span id="prompt-count" class="character-count">0 字</span></div><textarea id="prompt-input" name="prompt" rows="4" required placeholder="告诉 Codex 接下来要做什么…" aria-describedby="prompt-help"></textarea><p id="prompt-help" class="field-help">以一条新消息发送到选中的已有对话。</p></div></section>
+            <div class="form-actions"><div id="form-error" class="form-error" role="alert" hidden></div><p id="submission-help" class="submission-help" role="status" hidden></p><button id="submit-button" type="submit" class="button button-primary submit-button" aria-describedby="submission-help"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>创建定时任务</span></button><button type="button" id="cancel-edit" class="button button-secondary cancel-edit" hidden>取消编辑</button><p class="queue-assurance"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-5"/></svg>额度不足时自动等待，恢复后继续</p></div>
+          </fieldset></form>
         </section>
-
-        <div class="work-grid">
-          <section class="panel composer-panel" aria-labelledby="compose-title"><header class="panel-header"><div><span class="section-kicker" id="compose-kicker">NEW SCHEDULE</span><h2 id="compose-title">安排一个任务</h2></div><span class="panel-header-icon" aria-hidden="true">＋</span></header>
-            <div id="draft-note" class="draft-note" role="status" hidden></div>
-            <form id="schedule-form" novalidate>
-              <fieldset id="schedule-fields" disabled>
-                <div class="field"><label for="project-select">选择项目<span class="required-mark">*</span></label><select id="project-select" name="projectPath" required><option value="">正在加载项目…</option></select></div>
-                <div class="field"><div class="field-label-row"><label for="thread-select">已有对话<span class="required-mark">*</span></label><button type="button" id="refresh-threads" class="text-button" aria-label="刷新当前项目对话">刷新对话</button></div><div class="search-field"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="thread-search" autocomplete="off" placeholder="搜索标题、日期、编号或内容" aria-label="搜索已有对话的标题、日期、编号或内容" /></div><select id="thread-select" name="threadId" required aria-describedby="thread-help thread-details"><option value="">请先选择项目</option></select><p id="thread-help" class="field-help">在指定对话中继续，保留原有上下文。</p><div id="thread-details" class="thread-details" aria-live="polite" aria-atomic="true" hidden></div></div>
-                <div class="form-row"><div class="field"><label for="model-select">模型<span class="required-mark">*</span></label><select id="model-select" name="model" required><option value="">正在加载…</option></select></div><div class="field effort-field"><label for="effort-select">思考强度</label><select id="effort-select" name="effort"><option value="">默认</option></select></div></div>
-                <div class="field send-trigger-field">
-                  <div class="field-label-row"><label for="run-at">发送时间<span id="run-at-required" class="required-mark">*</span></label></div>
-                  <label class="quota-trigger-option" for="quota-trigger"><input type="checkbox" id="quota-trigger" aria-describedby="quota-trigger-help time-preview" /><span>额度可用时立即发送</span></label>
-                  <p id="quota-trigger-help" class="field-help quota-trigger-help" hidden>保存后每 30 秒检测；当前额度可用时立即发送，无需设置时间。勾选后仍需创建任务。</p>
-                  <div id="scheduled-time-controls">
-                    <input type="datetime-local" id="run-at" name="runAt" required step="60" />
-                    <div class="quick-times" role="group" aria-label="快捷发送时间"><button type="button" data-minutes="5">5 分钟后</button><button type="button" data-minutes="15">15 分钟后</button><button type="button" data-minutes="30">30 分钟后</button><button type="button" id="in-one-hour" data-minutes="60">1 小时后</button></div>
-                    <div class="timezone-row"><span>时区</span><select id="timezone-select" name="timeZone" aria-label="发送时间使用的时区"><option value="Asia/Shanghai">北京时间 · UTC+8</option><option value="Asia/Tokyo">东京时间</option><option value="Europe/London">伦敦时间</option><option value="America/New_York">纽约时间</option><option value="America/Los_Angeles">洛杉矶时间</option><option value="UTC">UTC</option></select></div>
-                  </div>
-                  <p id="time-preview" class="field-help">到达设定时间后进入执行队列。</p>
-                </div>
-                <div class="field prompt-field"><div class="field-label-row"><label for="prompt-input">发送内容<span class="required-mark">*</span></label><span id="prompt-count" class="character-count">0 字</span></div><textarea id="prompt-input" name="prompt" rows="5" required placeholder="例如：继续上次的工作，完成剩余修改并验证结果。" aria-describedby="prompt-help"></textarea><p id="prompt-help" class="field-help">会作为一条新消息，发送到你选择的已有对话。</p></div>
-                <div id="form-error" class="form-error" role="alert" hidden></div>
-                <p id="submission-help" class="submission-help" role="status" hidden></p>
-                <button id="submit-button" type="submit" class="button button-primary submit-button" aria-describedby="submission-help"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>创建定时任务</span><span class="button-arrow" aria-hidden="true">↗</span></button>
-                <button type="button" id="cancel-edit" class="button button-secondary cancel-edit" hidden>取消编辑</button>
-                <p class="queue-assurance"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-5"/></svg>额度不足时自动排队，恢复后继续执行</p>
-              </fieldset>
-            </form>
-          </section>
-
-          <section class="panel queue-panel" aria-labelledby="queue-title"><header class="panel-header"><div><span class="section-kicker">YOUR TASKS</span><h2 id="queue-title">任务队列 <span id="task-total" class="heading-count">0</span></h2></div><div id="worker-status" class="worker-status"><span class="worker-dot"></span><span>正在连接</span></div></header><div class="queue-toolbar"><div id="task-filters" class="filter-tabs" role="group" aria-label="筛选任务状态"><button type="button" class="filter-tab active" data-filter="active" aria-pressed="true">未完成 <span id="active-filter-count">0</span></button><button type="button" class="filter-tab" data-filter="completed" aria-pressed="false">已完成</button><button type="button" class="filter-tab" data-filter="all" aria-pressed="false">全部</button></div><span id="last-updated" class="last-updated">每 5 秒更新</span></div><div id="tasks-loading" class="loading-state"><span class="spinner"></span><p>正在读取任务…</p></div><div id="tasks-empty" class="empty-state" hidden><div class="empty-art" aria-hidden="true"><svg viewBox="0 0 80 80" fill="none"><rect x="17" y="17" width="46" height="49" rx="10"/><path d="M28 12v11M52 12v11M17 31h46M29 42h9M29 51h18"/><circle cx="59" cy="58" r="13"/><path d="M59 51v7l4 3"/></svg><span>✦</span></div><h3 id="empty-title">把下一步提前安排好</h3><p id="empty-description">创建第一个定时任务，<br />到时间，时序会帮你继续对话。</p></div><div id="task-list" class="task-list" aria-live="polite" aria-relevant="additions removals"></div><footer class="queue-footer"><span class="footer-dot"></span><p>执行时请保持电脑唤醒。关闭对话后可在后台继续；重启后，重新打开插件即可恢复队列。</p></footer></section>
-        </div>
-        <footer class="page-footer"><span>时序 · 每一次等待，都有下一步。</span><span id="footer-timezone">Asia/Shanghai</span></footer>
-      </main>
-    </div>
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  </body>
+        <section class="panel queue-panel" aria-labelledby="queue-title">
+          <header class="panel-header"><div><h2 id="queue-title">任务队列 <span id="task-total" class="heading-count">0</span></h2><p class="composer-description">查看进度，管理接下来的安排。</p></div><div id="worker-status" class="worker-status"><span class="worker-dot"></span><span>正在连接</span></div></header>
+          <div class="queue-toolbar"><div id="task-filters" class="filter-tabs" role="group" aria-label="筛选任务状态"><button type="button" class="filter-tab active" data-filter="active" aria-pressed="true">待处理 <span id="active-filter-count">0</span></button><button type="button" class="filter-tab" data-filter="completed" aria-pressed="false">已完成</button><button type="button" class="filter-tab" data-filter="all" aria-pressed="false">全部</button></div><span id="last-updated" class="last-updated">每 5 秒更新</span></div>
+          <div id="tasks-loading" class="loading-state" role="status"><span class="spinner"></span><p>正在读取任务…</p></div><div id="tasks-empty" class="empty-state" hidden><div class="empty-art" aria-hidden="true"><svg viewBox="0 0 80 80" fill="none"><rect x="17" y="17" width="46" height="49" rx="10"/><path d="M28 12v11M52 12v11M17 31h46M29 42h9M29 51h18"/><circle cx="59" cy="58" r="13"/><path d="M59 51v7l4 3"/></svg></div><h3 id="empty-title">还没有安排任务</h3><p id="empty-description">创建第一项任务，在这里查看执行进度。</p></div>
+          <div id="task-list" class="task-list" role="region" aria-label="任务列表" tabindex="0"></div><footer class="queue-footer"><span class="footer-dot"></span><p>任务在本机后台执行。请保持 Codex 运行、电脑唤醒。</p></footer>
+        </section>
+      </div>
+      <footer class="page-footer"><span>时序 · 让下一步准时发生</span><span>发送时区 <span id="footer-timezone">Asia/Shanghai</span></span></footer>
+    </main>
+  </div>
+  <dialog id="retry-dialog" class="confirm-dialog" aria-labelledby="retry-dialog-title" aria-describedby="retry-dialog-description"><form method="dialog"><span class="dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m12 3 10 18H2L12 3ZM12 9v5M12 17h.01"/></svg></span><h2 id="retry-dialog-title">确认是否重新发送</h2><p id="retry-dialog-description">上次发送的结果未能确认，重试可能产生重复消息。请先打开目标对话，核对任务是否已经执行。</p><p class="dialog-note">只有确认仍需再次发送时，才继续重试。</p><div class="dialog-actions"><button type="submit" class="button button-secondary" value="cancel" autofocus>返回核对</button><button type="submit" class="button button-primary" value="retry">确认重新发送</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
 </html>

@@ -37,7 +37,7 @@ input.on('line', async line => {
       // Only the genuine desktop-provided environment is used during discovery.
       // A missing context leaves registration untouched and does not break MCP.
       await registerDesktopConnectionFromHost();
-      result = { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: { name: 'codex-scheduler', version: '0.3.0' } };
+      result = { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: { name: 'codex-scheduler', version: '0.3.1' } };
     }
     else if (request.method === 'ping') result = {};
     else if (request.method === 'tools/list') result = { tools };

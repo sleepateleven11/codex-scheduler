@@ -111,8 +111,10 @@
     const label = typeof thread.providerLabel === "string" && thread.providerLabel.trim()
       ? thread.providerLabel.trim().slice(0, 120)
       : provider === "openai" ? "OpenAI" : provider === "deepseek" ? "DeepSeek" : provider ? "其他服务商" : "";
+    const suppliedIssue = typeof thread.providerIssue === "string" ? thread.providerIssue.trim().slice(0, 500) : "";
+    const guidance = "请在 Codex 切换该对话为 OpenAI，或选择兼容对话，然后刷新对话。仅更改模型名称不会切换服务商。";
     const issue = compatible === false
-      ? (typeof thread.providerIssue === "string" && thread.providerIssue.trim() ? thread.providerIssue.trim().slice(0, 500) + " " : "这个对话当前未使用受支持的 OpenAI 服务商。") + "请在 Codex 切换该对话为 OpenAI，或选择兼容对话，然后刷新对话。仅更改模型名称不会切换服务商。"
+      ? suppliedIssue && /请.*(?:OpenAI|订阅通道)/.test(suppliedIssue) ? suppliedIssue : (suppliedIssue || "这个对话当前未使用受支持的 OpenAI 服务商。") + " " + guidance
       : "";
     return { label, compatible, issue };
   }

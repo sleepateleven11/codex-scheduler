@@ -1,4 +1,4 @@
-export const LAUNCHER_URI = 'ui://codex-scheduler/launcher-v0.3.0.html';
+export const LAUNCHER_URI = 'ui://codex-scheduler/launcher-v0.3.1.html';
 export const LAUNCHER_MIME = 'text/html;profile=mcp-app';
 
 // A native entrypoint only launches the existing, authenticated local manager.
@@ -20,7 +20,7 @@ async function openManager(prepared){if(busy||!ready)return;busy=true;openButton
 function autoOpen(){if(!ready||!fullscreenEntry||!initialResult||openedAutomatically)return;openedAutomatically=true;void openManager(initialResult)}
 window.addEventListener('message',event=>{if(event.source!==window.parent)return;const message=event.data;if(!message||message.jsonrpc!=='2.0')return;if(message.id!==undefined&&pending.has(message.id)){const operation=pending.get(message.id);pending.delete(message.id);clearTimeout(operation.timer);if(message.error)operation.reject(message.error);else operation.resolve(message.result);return}if(message.method==='ui/notifications/tool-result'){initialResult=message.params;autoOpen()}},{passive:true});
 openButton.addEventListener('click',()=>void openManager());
-(async()=>{try{const initialized=await request('ui/initialize',{appInfo:{name:'codex-scheduler-launcher',version:'0.3.0'},appCapabilities:{},protocolVersion:'2026-01-26'});fullscreenEntry=initialized?.hostContext?.displayMode==='fullscreen';notify('ui/notifications/initialized',{});ready=true;openButton.disabled=false;openButton.textContent='打开任务管理器';status.textContent='点击即可打开，无需发送聊天消息。';autoOpen()}catch(error){openButton.textContent='连接尚未就绪';status.textContent='请重新打开这个入口，或使用桌面上的“时序任务管理器”。'}})();
+(async()=>{try{const initialized=await request('ui/initialize',{appInfo:{name:'codex-scheduler-launcher',version:'0.3.1'},appCapabilities:{},protocolVersion:'2026-01-26'});fullscreenEntry=initialized?.hostContext?.displayMode==='fullscreen';notify('ui/notifications/initialized',{});ready=true;openButton.disabled=false;openButton.textContent='打开任务管理器';status.textContent='点击即可打开，无需发送聊天消息。';autoOpen()}catch(error){openButton.textContent='连接尚未就绪';status.textContent='请重新打开这个入口，或使用桌面上的“时序任务管理器”。'}})();
 </script></body></html>`;
 
 export function launcherResource() {

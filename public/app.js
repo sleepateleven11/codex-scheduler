@@ -10,7 +10,8 @@
     taskSignature: "", toastTimeout: null, actionPending: new Set(), token: "", pendingCreation: null,
     preferences: {}, preferenceTail: Promise.resolve(), editingId: null, draftSnapshot: null, loadingDraft: false,
     reconnecting: false, noticeTaskId: null, loadedTasks: false,
-    diagnostics: null, checkingSetup: false, setupReported: false,
+    diagnostics: null, checkingSetup: false, setupReported: false, diagnosticsSignature: "",
+    pendingActions: new Map(), threadError: null, selectedThreadId: "", renderedFilter: "active", bootstrapping: false,
     alerts: { general: null, connection: null, desktop: null },
   };
   const labels = {
@@ -49,22 +50,23 @@
     } catch (_) { state.token = received || ""; }
   }
   async function api(path, options = {}) {
-    const response = await fetch(path, {
-      ...options,
-      cache: "no-store",
-      credentials: "same-origin",
-      headers: { Authorization: "Bearer " + state.token, ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) },
-    });
-    let data;
-    try { data = await response.json(); }
-    catch (_) { throw new Error("暂时无法读取响应，请稍后刷新重试。"); }
-    if (!response.ok) {
-      const error = new Error(data.message || data.error || "操作未完成，请稍后重试。");
-      error.status = response.status;
-      error.code = data.error;
-      throw error;
-    }
-    return data;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 45000);
+    try {
+      const response = await fetch(path, {
+        ...options, signal: controller.signal,
+        cache: "no-store", credentials: "same-origin",
+        headers: { Authorization: "Bearer " + state.token, ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) },
+      });
+      let data;
+      try { data = await response.json(); }
+      catch (error) { if (error.name === "AbortError") throw error; throw new Error("暂时无法读取响应，请稍后刷新重试。"); }
+      if (!response.ok) {
+        const error = new Error(data.message || data.error || "操作未完成，请稍后重试。");
+        error.status = response.status; error.code = data.error; throw error;
+      }
+      return data;
+    } finally { clearTimeout(timeout); }
   }
   function showAlert(message, kind = "warning", source = "general") {
     state.alerts[source] = message ? { message, kind } : null;
@@ -98,6 +100,7 @@
     renderWorker();
     renderServices();
     setComposerMode();
+    if (state.loadedTasks) renderTasks();
   }
   function renderServices() {
     const workerReady = state.connected && !["stopped", "stopping", "error"].includes(state.worker?.status);
@@ -107,7 +110,7 @@
     $("desktop-dot").className = "service-dot " + (desktopReady ? "online" : state.desktop ? "offline" : "");
     $("desktop-label").textContent = state.reconnecting ? "正在重新连接…" : desktopReady ? "已连接" : state.desktop ? "未连接" : "正在检查";
     $("reconnect-button").hidden = desktopReady;
-    $("reconnect-button").disabled = state.reconnecting || !state.connected;
+    $("reconnect-button").disabled = state.reconnecting || !state.connected || state.submitting || state.loadingDraft || state.checkingSetup || state.bootstrapping;
     $("reconnect-button").textContent = state.reconnecting ? "连接中…" : "重新连接";
     $("service-help").textContent = !state.connected ? "请双击“时序任务管理器”重新打开，任务记录会保留。" : desktopReady ? "保持 Codex 运行、电脑唤醒，任务会按时发送。" : "请完成连接自检。已有任务会保留，连接恢复后继续。";
   }
@@ -116,8 +119,11 @@
     const previousReady = state.diagnostics?.ready;
     state.diagnostics = report;
     const checks = Array.isArray(report?.checks) ? report.checks : [];
-    $("setup-summary").textContent = report?.summary || (report?.ready === true ? "本机设置已就绪" : report?.ready === false ? "还需完成以下设置" : "暂未获取自检结果，请点击重新检测");
-    $("setup-checks").replaceChildren(...checks.map((check) => {
+    const summary = report?.ready === true ? (checks.length ? checks.length + " 项检查通过，可以安排任务" : "本机设置已就绪") : report?.summary || (report?.ready === false ? "还需完成以下设置" : "暂未获取自检结果，请点击重新检测");
+    if ($("setup-summary").textContent !== summary) $("setup-summary").textContent = summary;
+    $("setup-panel").classList.toggle("needs-attention", report?.ready === false);
+    const signature = JSON.stringify(checks);
+    if (signature !== state.diagnosticsSignature) $("setup-checks").replaceChildren(...checks.map((check) => {
       const status = ["pass", "fail", "warning"].includes(check.status) ? check.status : "warning";
       const item = element("li", "setup-check " + status);
       const label = { pass: "通过", fail: "待处理", warning: "提示" }[status];
@@ -129,6 +135,7 @@
       item.append(body);
       return item;
     }));
+    state.diagnosticsSignature = signature;
     $("setup-checked-at").textContent = report?.checkedAt ? "检查于 " + formatDate(report.checkedAt) + "；检查不会发送消息。" : "检查不会创建任务或发送消息。";
     if (!state.setupReported && report) { $("setup-panel").open = report.ready !== true; state.setupReported = true; }
     if (report?.ready === false && previousReady !== false) $("setup-panel").open = true;
@@ -137,7 +144,10 @@
   async function checkSetup() {
     if (state.checkingSetup || state.submitting || state.loadingDraft) return;
     state.checkingSetup = true;
+    setComposerMode();
     $("diagnostics-button").disabled = true;
+    $("diagnostics-button").setAttribute("aria-busy", "true");
+    $("diagnostics-button").classList.add("is-loading");
     $("diagnostics-button").textContent = "正在检测…";
     $("setup-error").hidden = true;
     try {
@@ -164,6 +174,8 @@
     } finally {
       state.checkingSetup = false;
       $("diagnostics-button").disabled = false;
+      $("diagnostics-button").setAttribute("aria-busy", "false");
+      $("diagnostics-button").classList.remove("is-loading");
       $("diagnostics-button").textContent = "重新检测";
       setComposerMode();
     }
@@ -199,6 +211,7 @@
     });
   }
   function readableError(error) {
+    if (error.name === "AbortError") return "连接响应超时。任务记录会保留，请刷新确认状态后再操作。";
     if (error.status === 401 || error.status === 403) return "访问已失效，请双击桌面或开始菜单的“时序任务管理器”重新打开。";
     if (error instanceof TypeError) return "暂时无法连接调度服务。任务记录会保留，连接恢复后自动刷新。";
     return friendlyMessage(error.message) || "操作未完成，请稍后重试。";
@@ -296,6 +309,7 @@
     date.setSeconds(0, 0);
     $("run-at").value = asInput(date, $("timezone-select").value);
     updateTimePreview();
+    for (const button of document.querySelectorAll(".quick-times button")) button.setAttribute("aria-pressed", String(Number(button.dataset.minutes) === minutes));
   }
   function updateTimePreview() {
     const zone = $("timezone-select").value;
@@ -317,6 +331,7 @@
     $("timezone-select").disabled = quota;
     $("quota-trigger-help").hidden = !quota;
     $("quota-trigger-help").textContent = ui.quotaTriggerHint();
+    $("quota-trigger").closest(".quota-trigger-option").classList.toggle("selected", quota);
     updateTimePreview();
     setComposerMode();
   }
@@ -376,10 +391,14 @@
   async function loadThreads(preferred) {
     const request = ++state.threadRequest;
     const path = $("project-select").value;
-    const previous = typeof preferred === "string" ? preferred : $("thread-select").value;
+    const previous = typeof preferred === "string" ? preferred : $("thread-select").value || state.selectedThreadId;
+    state.selectedThreadId = previous;
+    state.threadError = null;
     state.threads = [];
     state.loadingThreads = !!path;
     $("refresh-threads").disabled = !!path;
+    $("refresh-threads").setAttribute("aria-busy", String(!!path));
+    $("refresh-threads").textContent = path ? "读取中…" : "刷新对话";
     renderThreads(previous);
     if (!path) { $("refresh-threads").disabled = false; return; }
     try {
@@ -392,17 +411,25 @@
     } catch (error) {
       if (request !== state.threadRequest) return;
       state.loadingThreads = false;
+      state.threadError = readableError(error);
       renderThreads();
       $("thread-help").textContent = readableError(error);
-      showAlert("读取对话失败：" + readableError(error) + " 点击“刷新对话”重试。", "error", "threads");
-    } finally { if (request === state.threadRequest) $("refresh-threads").disabled = false; }
+      const message = readableError(error);
+      showAlert("读取对话失败：" + message + (/刷新|重试/.test(message) ? "" : " 点击“刷新对话”重试。"), "error", "threads");
+    } finally { if (request === state.threadRequest) { $("refresh-threads").disabled = false; $("refresh-threads").setAttribute("aria-busy", "false"); $("refresh-threads").textContent = "刷新对话"; } }
   }
   function renderThreads(previous = $("thread-select").value) {
     const select = $("thread-select");
     select.replaceChildren();
     const query = $("thread-search").value;
     const available = ui.matchingThreads(state.threads, query);
-    const placeholder = element("option", "", state.loadingThreads ? "正在读取对话…" : !$("project-select").value ? "请先选择项目" : !state.threads.length ? "该项目暂无已有对话" : !available.length ? "没有匹配的对话" : "请选择已有对话");
+    const matchedCount = available.length;
+    const selected = state.threads.find((thread) => thread.id === previous || thread.id === state.selectedThreadId);
+    if (query.trim() && selected && !available.some(({ thread }) => thread.id === selected.id)) {
+      const pinned = ui.threadOptions([selected])[0];
+      if (pinned) available.unshift({ ...pinned, label: "当前已选 · " + pinned.label });
+    }
+    const placeholder = element("option", "", state.loadingThreads ? "正在读取对话…" : state.threadError ? "对话读取失败，请刷新重试" : !$("project-select").value ? "请先选择项目" : !state.threads.length ? "该项目暂无已有对话" : !matchedCount && query.trim() ? "没有匹配的对话" : "请选择已有对话");
     placeholder.value = "";
     select.append(placeholder);
     for (const { thread, label } of available) {
@@ -411,11 +438,15 @@
       select.append(option);
     }
     if (available.some(({ thread }) => thread.id === previous)) select.value = previous;
+    else if (available.some(({ thread }) => thread.id === state.selectedThreadId)) select.value = state.selectedThreadId;
+    if (!state.loadingThreads && !state.threadError) state.selectedThreadId = select.value;
+    select.title = select.selectedOptions[0]?.textContent || "";
     select.disabled = state.loadingThreads || !available.length;
     if (state.loadingThreads) $("thread-help").textContent = "正在读取所选项目的已有对话。";
     else if (!$("project-select").value) $("thread-help").textContent = "选择项目后，即可查找已有对话。";
+    else if (state.threadError) $("thread-help").textContent = "读取失败，请点击“刷新对话”重试。";
     else if (!state.threads.length) $("thread-help").textContent = "先在这个项目中创建对话，再点击“刷新对话”。";
-    else $("thread-help").textContent = (query.trim() ? "匹配 " + available.length + " / " : "共 ") + state.threads.length + " 个对话；列表时间为北京时间，# 后为对话编号。";
+    else $("thread-help").textContent = (query.trim() ? "匹配 " + matchedCount + " / " : "共 ") + state.threads.length + " 个对话 · 北京时间 · # 为编号" + (query.trim() && available.length > matchedCount ? "；已保留当前选择。" : "。");
     renderThreadDetails();
   }
   function renderThreadDetails() {
@@ -426,13 +457,29 @@
     const updated = ui.threadTime(thread.updatedAt);
     const created = ui.threadTime(thread.createdAt);
     const times = [updated ? "更新 " + updated : "", created ? "创建 " + created : ""].filter(Boolean);
+    const expanded = details.dataset.threadId === thread.id && details.querySelector(".thread-meta")?.open;
+    details.dataset.threadId = thread.id;
     const identity = element("p", "thread-identity");
     identity.append(element("span", "", "对话编号 "), element("code", "", thread.id));
-    details.replaceChildren(element("p", "thread-selected-title", thread.title || "未命名对话"), element("p", "thread-times", times.length ? times.join(" · ") + "（北京时间）" : "创建和更新时间暂不可用"), identity);
     const provider = ui.threadProviderStatus(thread);
-    if (provider.label || provider.compatible !== null) details.append(element("p", "thread-provider" + (provider.compatible === false ? " incompatible" : ""), "实际服务商：" + (provider.label || "待确认") + (provider.compatible === true ? " · 可使用" : provider.compatible === false ? " · 暂不能发送" : "")));
+    const top = element("div", "thread-topline");
+    const title = element("p", "thread-selected-title", thread.title || "未命名对话");
+    title.title = title.textContent;
+    top.append(title);
+    if (provider.label || provider.compatible !== null) {
+      const pill = element("span", "provider-pill " + (provider.compatible === false ? "incompatible" : provider.compatible === true ? "compatible" : ""), provider.compatible === true ? "OpenAI 订阅" : provider.label || "待确认");
+      pill.title = "实际服务商：" + (provider.label || "待确认") + (provider.compatible === false ? " · 暂不能发送" : "");
+      top.append(pill);
+    }
+    const shortId = ui.shortThreadIds(state.threads).get(thread.id) || thread.id;
+    details.replaceChildren(top, element("p", "thread-times", "#" + shortId + (updated ? " · 更新 " + updated : " · 时间待确认")));
     if (provider.issue) details.append(element("p", "thread-provider-issue", provider.issue));
-    if (typeof thread.preview === "string" && thread.preview.trim()) details.append(element("p", "thread-preview", "内容预览：" + thread.preview.trim().slice(0, 300)));
+    const metadata = element("details", "thread-meta");
+    metadata.open = !!expanded;
+    metadata.append(element("summary", "", "查看对话信息"), identity, element("p", "thread-times", times.length ? times.join(" · ") + "（北京时间）" : "创建和更新时间暂不可用"));
+    metadata.append(element("p", "thread-provider", "实际服务商：" + (provider.label || "待确认")));
+    if (typeof thread.preview === "string" && thread.preview.trim()) metadata.append(element("p", "thread-preview", "内容预览：" + thread.preview.trim().slice(0, 300)));
+    details.append(metadata);
     setComposerMode();
   }
   function renderWorker() {
@@ -485,11 +532,16 @@
   }
   function modelName(id) { const model = state.models.find((item) => item.id === id); return model?.displayName || model?.name || id || "默认模型"; }
   function actionButton(task, action, title, className = "") {
-    const button = element("button", "task-action " + className, title);
+    const pending = state.actionPending.has(task.id) && state.pendingActions.get(task.id) === action;
+    const busyLabels = { pause: "暂停中…", resume: "恢复中…", cancel: "取消中…", retry: "重试中…", edit: "载入中…", copy: "复制中…" };
+    const button = element("button", "task-action " + className + (pending ? " is-loading" : ""), pending ? busyLabels[action] || "处理中…" : title);
     button.type = "button";
     button.dataset.taskId = task.id;
     button.dataset.action = action;
-    button.disabled = state.actionPending.has(task.id);
+    button.disabled = state.actionPending.has(task.id) || !state.connected || (["copy", "edit"].includes(action) && (state.submitting || state.loadingDraft || state.checkingSetup));
+    button.setAttribute("aria-busy", String(pending));
+    button.setAttribute("aria-label", (pending ? busyLabels[action] || title : title) + "：" + (task.title || task.prompt || "定时任务").split("\n")[0].slice(0, 80));
+    if (!state.connected) button.title = "连接恢复后可操作，任务记录已保留。";
     button.addEventListener("click", () => actOnTask(task, action));
     return button;
   }
@@ -501,7 +553,9 @@
     card.dataset.taskId = task.id;
     const top = element("div", "task-top");
     const title = task.title || String(task.prompt || "定时任务").trim().split(/\n/)[0];
-    top.append(element("h3", "task-title", title || "定时任务"), element("span", "status-chip " + status, awaitingDesktopStart ? "已提交，等待开始" : task.deliveryState === "not_sent" ? "未发送" : labels[status] || "待处理"));
+    const heading = element("h3", "task-title", title || "定时任务");
+    heading.title = title || "定时任务";
+    top.append(heading, element("span", "status-chip " + status, awaitingDesktopStart ? "已提交，等待开始" : task.deliveryState === "not_sent" ? "未发送" : labels[status] || "待处理"));
     const destination = element("div", "task-destination");
     const targetId = targetIds.get(task.threadId);
     destination.append(icon("chat"), element("span", "", task.projectLabel || task.projectName || task.projectPath?.split(/[\\/]/).filter(Boolean).pop() || "所选项目"), element("span", "destination-divider", "/"), element("span", "", task.threadTitle || "所选对话"));
@@ -543,7 +597,7 @@
     else if (status === "needs_review") actions.append(actionButton(task, "retry", "核对后重试"));
     else if (!terminal.has(status) && status !== "running") actions.append(actionButton(task, "pause", "暂停"));
     if (!terminal.has(status) && status !== "running") actions.append(actionButton(task, "cancel", "取消", "cancel"));
-    if (status === "running") actions.append(element("span", "character-count", awaitingDesktopStart ? "已交给 Codex，等待开始" : "请在对话中查看进度"));
+    if (status === "running") actions.append(element("span", "task-progress-note", awaitingDesktopStart ? "已交给 Codex，等待开始" : "请在对话中查看进度"));
     bottom.append(details, actions);
     card.append(bottom);
     return card;
@@ -583,6 +637,7 @@
     $("pending-count").textContent = active.length;
     $("completed-count").textContent = state.tasks.filter((task) => completed.has(statusOf(task))).length;
     $("nav-count").textContent = active.length;
+    $("queue-jump-count").textContent = active.length;
     $("task-total").textContent = state.tasks.length;
     $("active-filter-count").textContent = active.length;
     const tasks = state.tasks.filter((task) => state.filter === "all" || (state.filter === "completed" ? completed.has(statusOf(task)) : !terminal.has(statusOf(task))));
@@ -593,20 +648,36 @@
     });
     $("tasks-loading").hidden = true;
     $("tasks-empty").hidden = tasks.length > 0;
+    $("task-list").tabIndex = tasks.length ? 0 : -1;
     if (!tasks.length) {
       $("empty-title").textContent = state.filter === "completed" ? "完成的任务会出现在这里" : state.filter === "all" ? "还没有定时任务" : state.tasks.length ? "当前没有未完成的任务" : "把下一步提前安排好";
       $("empty-description").textContent = state.filter === "completed" ? "每一项完成的任务，都能在这里回看结果。" : state.tasks.length ? "你可以安排下一项任务，或切换到全部查看记录。" : "创建第一个定时任务，\n到时间，时序会帮你继续对话。";
       $("empty-description").style.whiteSpace = "pre-line";
     }
-    const signature = JSON.stringify([state.filter, tasks, Array.from(state.actionPending)]);
+    const signature = JSON.stringify([state.filter, tasks, state.connected, state.submitting, state.loadingDraft, state.checkingSetup, Array.from(state.actionPending), Array.from(state.pendingActions)]);
     if (!force && signature === state.taskSignature) return;
     state.taskSignature = signature;
     const open = new Set(Array.from(document.querySelectorAll(".task-details[open]"), (node) => node.dataset.taskId));
-    const focused = document.activeElement?.dataset;
-    const focusTarget = focused?.action && focused?.taskId ? { action: focused.action, id: focused.taskId } : null;
+    const listScroll = state.renderedFilter === state.filter ? $("task-list").scrollTop : 0;
+    const detailScrolls = new Map(Array.from(document.querySelectorAll(".task-details[open]"), (node) => [node.dataset.taskId, Array.from(node.querySelectorAll("pre"), (pre) => ({ top: pre.scrollTop, left: pre.scrollLeft }))]));
+    const activeElement = document.activeElement;
+    const focused = activeElement?.dataset;
+    const focusTarget = focused?.action && focused?.taskId ? { action: focused.action, id: focused.taskId }
+      : activeElement?.tagName === "SUMMARY" && activeElement.closest(".task-details") ? { summary: true, id: activeElement.closest(".task-details").dataset.taskId } : null;
     const targetIds = ui.shortThreadIds(state.tasks.map((task) => ({ id: task.threadId })));
     $("task-list").replaceChildren(...tasks.map((task) => renderTask(task, open.has(task.id), targetIds)));
-    if (focusTarget) Array.from(document.querySelectorAll(".task-action")).find((button) => button.dataset.action === focusTarget.action && button.dataset.taskId === focusTarget.id)?.focus({ preventScroll: true });
+    $("task-list").scrollTop = listScroll;
+    state.renderedFilter = state.filter;
+    for (const node of document.querySelectorAll(".task-details[open]")) {
+      const positions = detailScrolls.get(node.dataset.taskId) || [];
+      Array.from(node.querySelectorAll("pre")).forEach((pre, index) => { if (positions[index]) { pre.scrollTop = positions[index].top; pre.scrollLeft = positions[index].left; } });
+    }
+    if (focusTarget?.summary) Array.from(document.querySelectorAll(".task-details")).find((node) => node.dataset.taskId === focusTarget.id)?.querySelector("summary")?.focus({ preventScroll: true });
+    else if (focusTarget) {
+      const replacement = Array.from(document.querySelectorAll(".task-action")).find((button) => button.dataset.action === focusTarget.action && button.dataset.taskId === focusTarget.id);
+      const fallback = Array.from(document.querySelectorAll(".task-details")).find((node) => node.dataset.taskId === focusTarget.id)?.querySelector("summary") || $("task-filters").querySelector(".active");
+      (replacement && !replacement.disabled ? replacement : fallback)?.focus({ preventScroll: true });
+    }
   }
   function snapshotForm() {
     return { projectPath: $("project-select").value, threadId: $("thread-select").value, model: $("model-select").value, effort: $("effort-select").value, timeZone: $("timezone-select").value, sendMode: $("quota-trigger").checked ? "quota_available" : "scheduled", runAtInput: $("run-at").value, prompt: $("prompt-input").value };
@@ -614,16 +685,24 @@
   function setComposerMode() {
     const editing = !!state.editingId;
     $("compose-title").textContent = editing ? "编辑定时任务" : "安排一个任务";
-    $("compose-kicker").textContent = editing ? "EDIT SCHEDULE" : "NEW SCHEDULE";
-    $("submit-button").querySelector("span").textContent = editing ? "保存修改" : $("quota-trigger").checked ? "创建额度任务" : "创建定时任务";
+    $("compose-kicker").textContent = editing ? "修改任务" : "新建任务";
+    $("submit-button").querySelector("span").textContent = state.submitting ? editing ? "正在保存…" : "正在创建…" : state.loadingDraft ? "正在载入…" : editing ? "保存修改" : $("quota-trigger").checked ? "创建额度任务" : "创建定时任务";
+    $("submit-button").classList.toggle("is-loading", state.submitting || state.loadingDraft);
+    $("submit-button").setAttribute("aria-busy", String(state.submitting || state.loadingDraft));
+    $("schedule-form").setAttribute("aria-busy", String(state.submitting || state.loadingDraft));
     $("cancel-edit").hidden = !editing;
     $("cancel-edit").textContent = "取消编辑";
     const editingLocked = editing && !ui.canEditTask(state.tasks.find((task) => task.id === state.editingId) || {});
     const blocked = ui.submissionBlockReason({ connected: state.connected, diagnostics: state.diagnostics, thread: state.threads.find((thread) => thread.id === $("thread-select").value) });
-    $("submit-button").disabled = state.submitting || state.loadingDraft || state.loadingThreads || state.checkingSetup || editingLocked || !!blocked;
+    $("submit-button").disabled = state.submitting || state.loadingDraft || state.loadingThreads || state.checkingSetup || state.bootstrapping || editingLocked || !!blocked;
     $("submission-help").hidden = !blocked;
-    $("submission-help").textContent = blocked;
+    const providerBlocked = state.threads.find((thread) => thread.id === $("thread-select").value)?.providerCompatible === false;
+    $("submission-help").textContent = providerBlocked ? "所选对话暂不能发送，请在上方选择 OpenAI 对话。" : blocked;
     if (editingLocked) $("cancel-edit").textContent = "保留为新草稿";
+    $("refresh-button").disabled = state.submitting || state.loadingDraft || state.checkingSetup || state.polling || state.bootstrapping;
+    $("diagnostics-button").disabled = state.submitting || state.loadingDraft || state.checkingSetup || state.reconnecting;
+    renderServices();
+    if (state.loadedTasks) renderTasks();
   }
   function selectTimeZone(timeZone) {
     try { new Intl.DateTimeFormat("zh-CN", { timeZone }); }
@@ -701,15 +780,31 @@
     }
     setComposerMode();
   }
+  function confirmRetry() {
+    const dialog = $("retry-dialog");
+    if (!dialog || typeof dialog.showModal !== "function") return Promise.resolve(window.confirm("上次发送结果未能确认，重试可能发送重复消息。请先核对目标对话，确认仍需再次发送吗？"));
+    if (dialog.open) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      dialog.returnValue = "cancel";
+      dialog.addEventListener("close", () => resolve(dialog.returnValue === "retry"), { once: true });
+      dialog.showModal();
+    });
+  }
   async function actOnTask(task, action) {
     if (state.actionPending.has(task.id)) return;
-    if (action === "edit" || action === "copy") return draftTask(task, action === "edit");
+    if (!state.connected) { toast("连接恢复后可操作，任务记录已保留。", true); return; }
+    if (action === "edit" || action === "copy") {
+      state.pendingActions.set(task.id, action);
+      try { return await draftTask(task, action === "edit"); }
+      finally { state.pendingActions.delete(task.id); renderTasks(); }
+    }
     const payload = { action };
     if (statusOf(task) === "needs_review" && action === "retry") {
-      if (!window.confirm("上一次发送的结果未能确认，重试可能发送重复消息。\n\n请先在目标对话中核对任务是否已经执行。确认仍需再次发送吗？")) return;
+      if (!await confirmRetry()) return;
       payload.acknowledgeDuplicateRisk = true;
     }
     state.actionPending.add(task.id);
+    state.pendingActions.set(task.id, action);
     renderTasks();
     try {
       await api("/api/tasks/" + encodeURIComponent(task.id) + "/action", { method: "POST", body: JSON.stringify(payload) });
@@ -717,12 +812,12 @@
       toast({ pause: "任务已暂停", resume: "任务已恢复，等待执行", cancel: "任务已取消", retry: "任务已重新加入队列" }[action] || "任务已更新");
       await poll(true);
     } catch (error) { showAlert(readableError(error), "error", "general"); }
-    finally { state.actionPending.delete(task.id); renderTasks(); }
+    finally { state.actionPending.delete(task.id); state.pendingActions.delete(task.id); renderTasks(); }
   }
   async function poll(manual = false) {
     if (state.polling) return;
     state.polling = true;
-    if (manual) $("refresh-button").disabled = true;
+    if (manual) { $("refresh-button").disabled = true; $("refresh-button").classList.add("is-loading"); $("refresh-button").setAttribute("aria-busy", "true"); }
     try {
       const data = await api("/api/tasks");
       receiveTasks(data.tasks || []);
@@ -735,7 +830,7 @@
       renderQuota(); renderTasks();
       $("last-updated").textContent = "更新于 " + new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date());
     } catch (error) { connection(false); showAlert(readableError(error), "error", "connection"); }
-    finally { state.polling = false; $("refresh-button").disabled = false; }
+    finally { state.polling = false; $("refresh-button").classList.remove("is-loading"); $("refresh-button").setAttribute("aria-busy", "false"); setComposerMode(); }
   }
   async function submit(event) {
     event.preventDefault();
@@ -775,11 +870,16 @@
         if (state.pendingCreation?.fingerprint !== fingerprint) state.pendingCreation = { fingerprint, id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2) };
         payload.clientRequestId = state.pendingCreation.id;
       }
-    } catch (error) { $("form-error").textContent = error.message; $("form-error").hidden = false; return; }
+    } catch (error) {
+      $("form-error").textContent = error.message; $("form-error").hidden = false;
+      const field = document.activeElement;
+      if (field?.matches("input, select, textarea") && $("schedule-form").contains(field)) { field.setAttribute("aria-invalid", "true"); field.setAttribute("aria-errormessage", "form-error"); }
+      return;
+    }
     state.submitting = true;
     $("submit-button").disabled = true;
     $("schedule-fields").disabled = true;
-    $("submit-button").querySelector("span").textContent = editingId ? "正在保存…" : "正在创建…";
+    setComposerMode();
     try {
       const response = await api(editingId ? "/api/tasks/" + encodeURIComponent(editingId) : "/api/tasks", { method: editingId ? "PATCH" : "POST", body: JSON.stringify(payload) });
       state.pendingCreation = null;
@@ -811,7 +911,10 @@
   }
   function updatePromptCount() { $("prompt-count").textContent = Array.from($("prompt-input").value).length + " 字"; }
   async function bootstrap() {
+    state.bootstrapping = true;
     $("refresh-button").disabled = true;
+    $("refresh-button").classList.add("is-loading");
+    $("refresh-button").setAttribute("aria-busy", "true");
     try {
       const data = await api("/api/bootstrap");
       state.projects = data.projects || [];
@@ -837,23 +940,25 @@
       $("tasks-empty").hidden = false;
       $("empty-title").textContent = "暂时无法读取任务";
       $("empty-description").textContent = "请检查连接后点击页面右上方的刷新。";
-    } finally { $("refresh-button").disabled = false; }
+    } finally { state.bootstrapping = false; $("refresh-button").classList.remove("is-loading"); $("refresh-button").setAttribute("aria-busy", "false"); setComposerMode(); }
   }
   $("schedule-form").addEventListener("submit", submit);
   $("project-select").addEventListener("change", async () => { $("thread-search").value = ""; await loadThreads(""); rememberPreferences(); });
   $("thread-search").addEventListener("input", () => renderThreads());
   $("refresh-threads").addEventListener("click", () => loadThreads());
-  $("thread-select").addEventListener("change", () => { renderThreadDetails(); rememberPreferences(); });
+  $("thread-select").addEventListener("change", () => { state.selectedThreadId = $("thread-select").value; $("thread-select").title = $("thread-select").selectedOptions[0]?.textContent || ""; renderThreadDetails(); rememberPreferences(); });
   $("model-select").addEventListener("change", () => { populateEfforts(); renderThreadDetails(); rememberPreferences(); });
   $("effort-select").addEventListener("change", rememberPreferences);
   $("timezone-select").addEventListener("change", () => { state.timeZone = $("timezone-select").value; updateTimePreview(); rememberPreferences(); });
-  $("run-at").addEventListener("change", updateTimePreview);
+  $("run-at").addEventListener("change", () => { for (const button of document.querySelectorAll(".quick-times button")) button.setAttribute("aria-pressed", "false"); updateTimePreview(); });
   $("quota-trigger").addEventListener("change", updateSendMode);
   $("prompt-input").addEventListener("input", updatePromptCount);
   document.querySelector(".quick-times").addEventListener("click", (event) => { const button = event.target.closest("button[data-minutes]"); if (button) setQuickTime(Number(button.dataset.minutes)); });
   $("cancel-edit").addEventListener("click", cancelEdit);
   $("reconnect-button").addEventListener("click", reconnectDesktop);
   $("diagnostics-button").addEventListener("click", checkSetup);
+  $("setup-nav-button").addEventListener("click", () => { $("setup-panel").open = true; $("setup-panel").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); $("setup-panel").querySelector("summary").focus({ preventScroll: true }); });
+  for (const type of ["input", "change"]) $("schedule-form").addEventListener(type, (event) => { event.target.removeAttribute("aria-invalid"); event.target.removeAttribute("aria-errormessage"); $("form-error").hidden = true; });
   $("notice-dismiss").addEventListener("click", () => { $("task-notice").hidden = true; });
   $("notice-view").addEventListener("click", () => {
     setFilter("all");

@@ -188,3 +188,9 @@ test('provider blocking explains the selected conversation before unrelated glob
   assert.ok(reason.includes('选择兼容对话'));
   assert.ok(!reason.includes('其他设置'));
 });
+
+test('a complete provider repair instruction from the backend is displayed once', () => {
+  const message = '这个对话绑定了其他服务商。请先在 Codex 原对话切换到 OpenAI 订阅通道，再刷新；也可以选择已有的 OpenAI 对话。仅选择 GPT 模型不会切换服务商。';
+  const status = ui.threadProviderStatus({ modelProvider: 'deepseek', providerCompatible: false, providerIssue: message });
+  assert.equal(status.issue, message);
+});

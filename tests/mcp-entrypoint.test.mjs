@@ -38,7 +38,7 @@ test('real MCP initialize registers genuine host context without a tools/call or
   const dir = await directory(t);
   const request = await mcp(t, dir, { CODEX_THREAD_ID: SOURCE, CODEX_APP_TOOLS_PIPE_PATH: PIPE });
   const initialized = await request('initialize', { protocolVersion: '2024-11-05', capabilities: {} });
-  assert.equal(initialized.result.serverInfo.version, '0.3.0');
+  assert.equal(initialized.result.serverInfo.version, '0.3.1');
   assert.ok(initialized.result.capabilities.resources);
   const descriptor = JSON.parse(await fs.readFile(path.join(dir, 'desktop-connection.json'), 'utf8'));
   assert.equal(descriptor.sourceThreadId, SOURCE); assert.equal(descriptor.pipePath, PIPE);
@@ -69,7 +69,7 @@ test('MCP advertises and forwards an explicitly authorized quota trigger without
   const submissions = [];
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.3.0', status: 'running' } }));
+    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.3.1', status: 'running' } }));
     assert.equal(req.url, '/api/tasks');
     assert.equal(req.method, 'POST');
     const chunks = [];
