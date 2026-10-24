@@ -64,6 +64,7 @@ async function main() {
   }
 
   const staged = await stageInstallationSource({ nodePath });
+  const stableNodePath = staged.nodePath;
   const marketplacePath = path.join(staged.root, '.agents', 'plugins', 'marketplace.json');
   client = await connect(codexPath, marketplaceOverrides(staged.root));
   let installedRoot;
@@ -78,7 +79,7 @@ async function main() {
       value: { source_type: 'local', source: staged.root }, mergeStrategy: 'upsert' });
     const detail = await readInstalled(client, marketplacePath);
     if (!detail.summary.installed || !detail.summary.enabled) throw new Error('安装结果未显示插件已启用。');
-    installedRoot = await patchInstalledMcp(detail, manifest.version, nodePath);
+    installedRoot = await patchInstalledMcp(detail, manifest.version, stableNodePath);
     await client.request('plugin/reconcile', { reason: 'codex-scheduler local installation verified launch paths' }, 90000);
     console.log(`已安装 ${PLUGIN_ID} ${manifest.version}。本地缓存：${installedRoot}`);
     console.log(`本机安装副本：${staged.root}。原解压目录可移动或删除，不影响已安装版本。`);
@@ -93,7 +94,7 @@ async function main() {
     const tools = await verifyTools(client);
     console.log(`新会话已发现 ${tools.length} 个定时任务工具。`);
   } finally { await client.close(); }
-  const entrypoints = await installManagerLaunchers({ installedRoot, nodePath });
+  const entrypoints = await installManagerLaunchers({ installedRoot, nodePath: stableNodePath });
   if (entrypoints.installed) console.log('已创建桌面和开始菜单的“时序任务管理器”，双击即可使用，也可在 Codex 中打开。');
   else console.log('可运行 npm run open，或在 Codex 中说“打开定时任务管理器”。');
 }

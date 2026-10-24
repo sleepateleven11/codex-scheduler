@@ -10,7 +10,7 @@ import { PreferencesStore } from './preferences.mjs';
 import { DiagnosticsService } from './diagnostics.mjs';
 
 const paths = getPaths();
-const version = '0.3.2';
+const version = '0.3.3';
 const preferences = new PreferencesStore(paths.configPath);
 const startedAt = new Date().toISOString();
 let lockHandle; let server; let mutexServer; let queue; let adapter; let diagnostics; let endpoint; let stopping = false;

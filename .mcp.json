@@ -6,6 +6,11 @@
         "src\\mcp-server.mjs"
       ],
       "cwd": ".",
+      "env": {
+        "NODE_OPTIONS": "",
+        "NODE_PATH": "",
+        "PSModulePath": ""
+      },
       "startup_timeout_sec": 20,
       "tool_timeout_sec": 120,
       "env_vars": [

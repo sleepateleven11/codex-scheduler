@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { inspectSchedulerSource, planMarketplaceSource, mcpManifest, portableMcpManifest, distributionPayload, stageInstallationSource, DISTRIBUTION_INCLUDES } from '../scripts/plugin-common.mjs';
 import { installPluginWithRecovery, selectCachedSchedulerMcps } from '../scripts/install.mjs';
 import { getPaths } from '../src/paths.mjs';
@@ -80,10 +81,21 @@ async function distributableFixture(t) {
   for (const name of ['src/mcp-server.mjs', 'public/app.js', 'skills/codex-scheduler/SKILL.md', 'scripts/install.mjs', 'scripts/uninstall.mjs', 'README.md', '安装插件.cmd', '卸载插件.cmd']) await fs.writeFile(path.join(root, name), `// ${name} fixture only\n`);
   for (const name of ['package.json', 'package-lock.json']) await fs.writeFile(path.join(root, name), JSON.stringify({ name: 'codex-scheduler', version: '1.2.3' }));
   await fs.writeFile(path.join(root, '.mcp.json'), JSON.stringify(mcpManifest(path.join(f.directory, 'developer Node', 'node.exe'), root, { dataDir: path.join(f.directory, 'developer data') })));
-  return { ...f, root };
+  const binary = Buffer.from('fixture Node, never executed');
+  const license = Buffer.from('fixture upstream license');
+  const digest = value => createHash('sha256').update(value).digest('hex');
+  const nodePath = path.join(root, 'runtime', 'windows-x64', 'node.exe');
+  await fs.mkdir(path.dirname(nodePath), { recursive: true });
+  await fs.writeFile(nodePath, binary);
+  await fs.writeFile(path.join(root, 'runtime', 'LICENSE.node.txt'), license);
+  await fs.writeFile(path.join(root, 'runtime', 'node-release.json'), JSON.stringify({ version: '24.22.1', platforms: {
+    'win-x64': { url: 'https://nodejs.org/dist/v24.22.1/win-x64/node.exe', sha256: digest(binary) },
+    'win-arm64': { url: 'https://nodejs.org/dist/v24.22.1/win-arm64/node.exe', sha256: digest('unused arm64 fixture') },
+  }, license: { file: 'LICENSE.node.txt', source: 'https://raw.githubusercontent.com/nodejs/node/v24.22.1/LICENSE', sha256: digest(license) } }));
+  return { ...f, root, nodePath, stage: options => stageInstallationSource({ sourceRoot: root, nodePath, platform: 'win32', ...options }) };
 }
 
-test('distribution sanitizes machine paths and excludes runtime, tests and verification artifacts', async t => {
+test('source distribution sanitizes machine paths and excludes runtime binaries, tests and verification artifacts', async t => {
   const f = await distributableFixture(t);
   await fs.mkdir(path.join(f.root, 'tests'));
   await fs.writeFile(path.join(f.root, 'tests', 'private-fixture.json'), 'not distributed');
@@ -94,6 +106,9 @@ test('distribution sanitizes machine paths and excludes runtime, tests and verif
   assert.deepEqual(JSON.parse(payload.find(file => file.name === '.mcp.json').bytes.toString()), portableMcpManifest());
   assert.ok(!DISTRIBUTION_INCLUDES.includes('tests'));
   assert.ok(!payload.some(file => /tests|verification|queue\.json/.test(file.name)));
+  assert.ok(payload.some(file => file.name === 'runtime/node-release.json'));
+  assert.ok(payload.some(file => file.name === 'runtime/LICENSE.node.txt'));
+  assert.ok(!payload.some(file => file.name.endsWith('/node.exe')));
   assert.doesNotMatch(Buffer.concat(payload.map(file => file.bytes)).toString(), /developer Node|developer data/);
   await fs.writeFile(path.join(f.root, 'src', 'auth.json'), 'sensitive file, must not ship');
   await assert.rejects(distributionPayload(f.root), /本机运行数据/);
@@ -103,20 +118,24 @@ test('clean profile install stages its own stable local source and survives remo
   const f = await distributableFixture(t);
   const dataDir = path.join(f.directory, 'recipient profile', 'own stable data');
   await fs.mkdir(dataDir, { recursive: true });
-  const nodePath = path.join(f.directory, 'recipient Node', 'node.exe');
-  const staged = await stageInstallationSource({ sourceRoot: f.root, dataDir, nodePath });
+  const staged = await f.stage({ dataDir });
   assert.equal(path.dirname(staged.root), path.join(dataDir, 'installation', 'plugin'));
   assert.match(path.basename(staged.root), /^1\.2\.3-[a-f0-9]{16}$/);
   const installed = JSON.parse(await fs.readFile(path.join(staged.root, '.mcp.json'), 'utf8')).mcpServers.codex_scheduler;
-  assert.equal(installed.command, nodePath);
+  assert.equal(installed.command, staged.nodePath);
+  assert.equal(path.dirname(path.dirname(installed.command)), path.join(dataDir, 'runtime'));
+  assert.notEqual(installed.command, f.nodePath);
   assert.equal(installed.cwd, await fs.realpath(dataDir));
   assert.deepEqual(installed.args, [path.join(staged.root, 'src', 'mcp-server.mjs')]);
-  assert.equal((await stageInstallationSource({ sourceRoot: f.root, dataDir, nodePath })).root, staged.root);
+  assert.equal((await f.stage({ dataDir })).root, staged.root);
   // Delete only this test's extraction, not the retained recipient data.
   assert.equal(path.dirname(f.root), f.directory);
   await fs.rm(f.root, { recursive: true });
   assert.equal((await inspectSchedulerSource(staged.root)).manifest.version, '1.2.3');
   await fs.access(path.join(staged.root, 'scripts', 'uninstall.mjs'));
+  assert.equal(await fs.readFile(staged.nodePath, 'utf8'), 'fixture Node, never executed');
+  assert.equal(await fs.readFile(path.join(path.dirname(staged.nodePath), 'LICENSE.node.txt'), 'utf8'), 'fixture upstream license');
+  assert.equal(await fs.stat(path.join(staged.root, 'runtime', 'windows-x64')).then(() => true, () => false), false);
   assert.equal(await fs.stat(path.join(dataDir, 'queue.json')).then(() => true, () => false), false);
 });
 
@@ -124,10 +143,10 @@ test('existing local source is checked for tampering before reinstall and never 
   const f = await distributableFixture(t);
   const dataDir = path.join(f.directory, 'recipient data');
   await fs.mkdir(dataDir);
-  const staged = await stageInstallationSource({ sourceRoot: f.root, dataDir });
+  const staged = await f.stage({ dataDir });
   const existingFile = path.join(staged.root, 'src', 'mcp-server.mjs');
   await fs.writeFile(existingFile, 'foreign changed file');
-  await assert.rejects(stageInstallationSource({ sourceRoot: f.root, dataDir }), /内容不符.*保留/);
+  await assert.rejects(f.stage({ dataDir }), /内容不符.*保留/);
   assert.equal(await fs.readFile(existingFile, 'utf8'), 'foreign changed file');
 });
 
@@ -137,7 +156,7 @@ test('Windows stable source publication retries transient locks with a bounded b
   await fs.mkdir(dataDir);
   let attempts = 0;
   const delays = [];
-  const staged = await stageInstallationSource({ sourceRoot: f.root, dataDir, platform: 'win32',
+  const staged = await f.stage({ dataDir, platform: 'win32',
     rename: async (from, to) => {
       const code = ['EPERM', 'EACCES', 'EBUSY'][attempts++];
       if (code) throw Object.assign(new Error('transient Windows directory lock'), { code });
@@ -153,14 +172,14 @@ test('persistent Windows locks stop after ten publication attempts and retain al
   const f = await distributableFixture(t);
   const dataDir = path.join(f.directory, 'recipient data');
   await fs.mkdir(dataDir);
-  const previous = await stageInstallationSource({ sourceRoot: f.root, dataDir });
+  const previous = await f.stage({ dataDir });
   const oldFile = path.join(previous.root, 'README.md');
   const oldContents = await fs.readFile(oldFile, 'utf8');
   await fs.appendFile(path.join(f.root, 'README.md'), 'updated payload');
   let attempts = 0;
   const delays = [];
   const lock = Object.assign(new Error('persistent Windows lock'), { code: 'EPERM' });
-  await assert.rejects(stageInstallationSource({ sourceRoot: f.root, dataDir, platform: 'win32',
+  await assert.rejects(f.stage({ dataDir, platform: 'win32',
     rename: async () => { attempts++; throw lock; }, delay: async ms => { delays.push(ms); },
   }), actual => actual === lock);
   assert.equal(attempts, 10);
@@ -176,7 +195,7 @@ test('non-lock publication errors and other platforms fail immediately without r
     await fs.mkdir(dataDir);
     let attempts = 0;
     const failure = Object.assign(new Error('not a retryable Windows sharing error'), { code });
-    await assert.rejects(stageInstallationSource({ sourceRoot: f.root, dataDir, platform,
+    await assert.rejects(f.stage({ dataDir, platform,
       rename: async () => { attempts++; throw failure; }, delay: async () => { assert.fail('must not retry unrelated errors'); },
     }), actual => actual === failure);
     assert.equal(attempts, 1);
@@ -189,7 +208,7 @@ test('a target appearing during Windows lock retries is validated and never over
   await fs.mkdir(dataDir);
   let attempts = 0;
   let target;
-  await assert.rejects(stageInstallationSource({ sourceRoot: f.root, dataDir, platform: 'win32',
+  await assert.rejects(f.stage({ dataDir, platform: 'win32',
     rename: async (from, to) => {
       attempts++; target = to;
       await fs.cp(from, to, { recursive: true });

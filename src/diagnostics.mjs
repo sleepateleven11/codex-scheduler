@@ -39,7 +39,7 @@ export class DiagnosticsService {
     const subscription = value(3);
     const checks = [
       check('platform', 'Windows 环境', this.platform === 'win32' ? 'pass' : 'fail', this.platform === 'win32' ? '当前 Windows 环境受支持。' : '此分发版需要 Windows。'),
-      check('node', '运行环境', Number(this.nodeVersion.split('.')[0]) >= 22 ? 'pass' : 'fail', Number(this.nodeVersion.split('.')[0]) >= 22 ? 'Node.js 运行环境可用。' : '请安装 Node.js 22 或更高版本，再重新安装插件。'),
+      check('node', '运行环境', Number(this.nodeVersion.split('.')[0]) >= 22 ? 'pass' : 'fail', Number(this.nodeVersion.split('.')[0]) >= 22 ? 'Node.js 运行环境可用。' : '运行环境不兼容，请下载对应架构的 Windows 离线包并重新运行安装入口。'),
       check('codex', 'Codex 桌面', ok(0) ? 'pass' : 'fail', ok(0) ? '已找到本机 Codex。' : '未找到 Codex，请安装并启动 Codex 桌面。'),
       check('storage', '本机数据', ok(2) ? 'pass' : 'fail', ok(2) ? '任务可以保存在当前电脑。' : '无法读写任务目录，请检查当前用户权限后重新安装。'),
       check('account', 'ChatGPT 登录', subscription?.accountType === 'chatgpt' ? 'pass' : 'fail', subscription?.accountType === 'chatgpt' ? '已使用本机 ChatGPT 账号登录。' : '请在 Codex 中登录自己的 ChatGPT 账号；此版本使用订阅额度。'),

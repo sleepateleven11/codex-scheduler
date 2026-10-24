@@ -24,3 +24,7 @@ codex-scheduler-install.json
 worker.lock
 *.pem
 *.key
+
+# Official runtimes are verified and bundled into release ZIPs, not Git history.
+runtime/windows-x64/
+runtime/windows-arm64/

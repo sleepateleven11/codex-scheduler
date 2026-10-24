@@ -79,6 +79,7 @@ test('hidden Windows entrypoints quote Unicode and spaces and store only allowli
   assert.ok(plan.launcherSource.includes('""D:\\O\'Brien Node\\node.exe"" ""C:\\用户\\插件缓存\\0.2.0\\scripts\\open.mjs""'));
   assert.ok(plan.launcherSource.includes(', 0, True)'));
   assert.ok(plan.launcherSource.includes('processEnv("CODEX_HOME") = "C:\\本机 配置\\.codex"'));
+  for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'PSModulePath']) assert.ok(plan.launcherSource.includes(`processEnv.Remove "${key}"`));
   for (const forbidden of ['secret-key', 'OPENAI_API_KEY', 'ephemeral-pipe', 'CODEX_TOOL_CALL_ID', token, '?token=', '127.0.0.1']) assert.ok(!plan.launcherSource.includes(forbidden), forbidden);
   assert.equal(buildWindowsLauncherPlan({ ...planOptions, dataDir: planOptions.dataDir.toUpperCase() }).scope, plan.scope);
   for (const change of [{ installedRoot: 'relative' }, { nodePath: 'C:\\python.exe' }, { desktopDir: 'C:\\bad\npath' }, { dataDir: 'C:\\invalid"path' }]) assert.throws(() => buildWindowsLauncherPlan({ ...planOptions, ...change }));

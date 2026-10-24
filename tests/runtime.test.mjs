@@ -50,6 +50,32 @@ test('Windows package discovery reads only the current user registration and sel
   assert.doesNotMatch(calls[1][1].at(-1), /AllUsers|Set-|Remove-|Register-/);
 });
 
+test('Windows discovery accepts the direct updater bin layout without requiring PATH or package commands', async t => {
+  const f = await fixture(t);
+  const local = path.join(f.directory, 'Windows 用户 Local');
+  const file = await f.file('Windows 用户 Local/OpenAI/Codex/bin/codex.exe');
+  assert.equal(await discoverCodex({ platform: 'win32', env: { LOCALAPPDATA: local }, home: f.home,
+    runCommand: async () => assert.fail('the direct CLI exists'),
+  }), file);
+});
+
+test('Store discovery supports the resources bin layout even when PATH lookup fails', async t => {
+  const f = await fixture(t);
+  const location = path.join(f.directory, 'store installed package');
+  const file = await f.file('store installed package/app/resources/bin/codex.exe');
+  const calls = [];
+  assert.equal(await discoverCodex({ platform: 'win32', env: {}, home: f.home,
+    runCommand: async (command, args, options) => {
+      calls.push(command);
+      assert.equal(options.windowsHide, true);
+      if (command === 'where.exe') throw new Error('PATH command unavailable');
+      assert.match(args.at(-1), /^Get-AppxPackage -Name OpenAI\.Codex /);
+      return { stdout: JSON.stringify([null, 'relative unsafe path', location]) };
+    },
+  }), file);
+  assert.deepEqual(calls, ['where.exe', 'powershell.exe']);
+});
+
 test('missing Codex produces an installation instruction without trying an unrelated executable', async t => {
   const f = await fixture(t);
   await assert.rejects(discoverCodex({ platform: 'win32', env: {}, home: f.home, runCommand: async () => ({ stdout: '' }) }), /请先安装并登录 Codex 桌面端/);

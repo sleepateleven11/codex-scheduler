@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { CodexRpcClient } from '../src/rpc-client.mjs';
 import { discoverCodex, discoverNode } from '../src/runtime.mjs';
 import { getPaths } from '../src/paths.mjs';
+import { validateRuntimeRelease, runtimeOfflinePayload, stageWindowsRuntime } from './runtime-package.mjs';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const PLUGIN_NAME = 'codex-scheduler';
@@ -13,7 +14,7 @@ export const MARKETPLACE_NAME = 'local-scheduler';
 export const PLUGIN_ID = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
 export const MARKETPLACE_PATH = path.join(ROOT, '.agents', 'plugins', 'marketplace.json');
 export const TOOL_NAMES = ['scheduler_open', 'scheduler_catalog', 'scheduler_threads', 'scheduler_create', 'scheduler_list', 'scheduler_action'];
-export const DISTRIBUTION_INCLUDES = ['.codex-plugin', '.mcp.json', '.agents', 'src', 'public', 'skills', 'scripts', 'package.json', 'package-lock.json', 'README.md', '安装插件.cmd', '卸载插件.cmd'];
+export const DISTRIBUTION_INCLUDES = ['.codex-plugin', '.mcp.json', '.agents', 'src', 'public', 'skills', 'scripts', 'runtime/node-release.json', 'runtime/LICENSE.node.txt', 'package.json', 'package-lock.json', 'README.md', '安装插件.cmd', '卸载插件.cmd'];
 
 export async function readJson(file) {
   return JSON.parse(await fs.readFile(file, 'utf8'));
@@ -31,6 +32,7 @@ export function mcpManifest(nodePath, launchRoot = ROOT, { dataDir = getPaths().
     command: nodePath,
     args: [path.join(launchRoot, 'src', 'mcp-server.mjs')],
     cwd: dataDir,
+    env: { NODE_OPTIONS: '', NODE_PATH: '', PSModulePath: '' },
     startup_timeout_sec: 20,
     tool_timeout_sec: 120,
     env_vars: ['LOCALAPPDATA', 'APPDATA', 'USERPROFILE', 'CODEX_HOME', 'CODEX_CLI_PATH', 'SCHEDULER_CODEX_PATH', 'SCHEDULER_DATA_DIR', 'PATH', 'CODEX_APP_TOOLS_PIPE_PATH', 'CODEX_THREAD_ID'],
@@ -43,7 +45,7 @@ export function portableMcpManifest() {
   return mcpManifest('node', '.', { dataDir: '.' });
 }
 
-export async function distributionPayload(sourceRoot = ROOT) {
+export async function distributionPayload(sourceRoot = ROOT, { arch } = {}) {
   const root = await fs.realpath(sourceRoot);
   const files = [];
   async function collect(relative) {
@@ -62,11 +64,14 @@ export async function distributionPayload(sourceRoot = ROOT) {
     } else throw new Error(`分发目录中存在不支持的文件：${relative}`);
   }
   for (const name of DISTRIBUTION_INCLUDES) await collect(name);
+  const release = validateRuntimeRelease(JSON.parse(files.find(file => file.name === 'runtime/node-release.json').bytes.toString('utf8')));
+  if (createHash('sha256').update(files.find(file => file.name === `runtime/${release.license.file}`).bytes).digest('hex') !== release.license.sha256) throw new Error('Node.js 许可 SHA-256 校验失败。');
+  if (arch !== undefined) files.push(...await runtimeOfflinePayload(root, arch, { release }));
   return files.sort((a, b) => a.name.localeCompare(b.name, 'en'));
 }
 
-export async function writeDistribution(destination, { sourceRoot = ROOT, files } = {}) {
-  files ||= await distributionPayload(sourceRoot);
+export async function writeDistribution(destination, { sourceRoot = ROOT, files, arch } = {}) {
+  files ||= await distributionPayload(sourceRoot, { arch });
   for (const file of files) {
     const target = path.join(destination, file.name);
     await fs.mkdir(path.dirname(target), { recursive: true });
@@ -79,6 +84,7 @@ export async function stageInstallationSource({ sourceRoot = ROOT, dataDir = get
   platform = process.platform, rename = fs.rename, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const { manifest } = await inspectSchedulerSource(sourceRoot);
   const files = await distributionPayload(sourceRoot);
+  const runtime = platform === 'win32' ? await stageWindowsRuntime({ sourceRoot, dataDir, nodePath }) : { nodePath };
   const hash = createHash('sha256');
   for (const file of files) hash.update(`${file.name}\0${file.bytes.length}\0`).update(file.bytes);
   const digest = hash.digest('hex');
@@ -120,8 +126,8 @@ export async function stageInstallationSource({ sourceRoot = ROOT, dataDir = get
       if (samePath(path.dirname(temporary), parent) && path.basename(temporary).startsWith('.install-')) await fs.rm(temporary, { recursive: true, force: true });
     }
   }
-  await writeMcpConfig(path.join(stagedRoot, '.mcp.json'), nodePath, stagedRoot, { dataDir });
-  return { root: stagedRoot, digest, files: files.length };
+  await writeMcpConfig(path.join(stagedRoot, '.mcp.json'), runtime.nodePath, stagedRoot, { dataDir });
+  return { root: stagedRoot, digest, files: files.length, nodePath: runtime.nodePath };
 }
 
 // Migration is safe only for our dedicated local marketplace. A marketplace

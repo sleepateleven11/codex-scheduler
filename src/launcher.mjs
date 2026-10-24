@@ -70,6 +70,9 @@ export function buildWindowsLauncherPlan({ installedRoot, nodePath = process.exe
   const launcherSource = [marker,
     'Option Explicit', 'Dim shell, processEnv, result', 'Set shell = CreateObject("WScript.Shell")',
     'Set processEnv = shell.Environment("PROCESS")',
+    'processEnv.Remove "NODE_OPTIONS"',
+    'processEnv.Remove "NODE_PATH"',
+    'processEnv.Remove "PSModulePath"',
     ...Object.entries(explicitEnv).map(([key, value]) => `processEnv(${vbQuote(key)}) = ${vbQuote(value)}`),
     `shell.CurrentDirectory = ${vbQuote(installedRoot)}`,
     'On Error Resume Next', `result = shell.Run(${vbQuote(commandLine)}, 0, True)`,
@@ -91,8 +94,10 @@ export function ownsManagerShortcut(shortcut, plan) {
 
 async function powershell(script) {
   const encoded = Buffer.from(`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);\n${script}`, 'utf16le').toString('base64');
+  const env = { ...process.env };
+  delete env.PSModulePath;
   try {
-    const { stdout } = await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded], { windowsHide: true, timeout: 15000, maxBuffer: 65536 });
+    const { stdout } = await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded], { windowsHide: true, timeout: 15000, maxBuffer: 65536, env });
     return stdout.trim() ? JSON.parse(stdout.trim()) : {};
   } catch (cause) { throw new Error(`快捷方式操作未完成：${String(cause.stderr || cause.message).trim()}`, { cause }); }
 }

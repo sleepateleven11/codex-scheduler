@@ -1,28 +1,33 @@
 @echo off
 chcp 65001 >nul
-setlocal
-cd /d "%~dp0"
-if not exist "%~dp0package.json" goto incomplete
-if not exist "%~dp0.codex-plugin\plugin.json" goto incomplete
-if not exist "%~dp0scripts\uninstall.mjs" goto incomplete
-if not exist "%~dp0src\paths.mjs" goto incomplete
-if not exist "%~dp0src\runtime.mjs" goto incomplete
-where node >nul 2>&1
-if errorlevel 1 goto node_required
-node -e "process.exit(Number(process.versions.node.split('.')[0]) >= 22 ? 0 : 1)" >nul 2>&1
-if errorlevel 1 goto node_required
-node "%~dp0scripts\uninstall.mjs"
+setlocal DisableDelayedExpansion
+set "PSModulePath="
+set "scheduler_root=%~dp0"
+set "scheduler_pause=1"
+set "scheduler_dry_run="
+:parse_arguments
+if "%~1"=="" goto start
+if /i "%~1"=="--no-pause" goto no_pause
+if /i "%~1"=="--dry-run" goto dry_run
+echo Unsupported argument. Supported: --dry-run --no-pause
+set "scheduler_exit_code=2"
+goto finish
+:no_pause
+set "scheduler_pause=0"
+shift
+goto parse_arguments
+:dry_run
+set "scheduler_dry_run=-DryRun"
+shift
+goto parse_arguments
+:start
+if not exist "%scheduler_root%scripts\bootstrap.ps1" goto incomplete
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%scheduler_root%scripts\bootstrap.ps1" -Action uninstall %scheduler_dry_run%
 set "scheduler_exit_code=%errorlevel%"
-pause
-exit /b %scheduler_exit_code%
-
+goto finish
 :incomplete
-rem Encoded Chinese instructions avoid CMD multibyte parsing issues.
-powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand WwBDAG8AbgBzAG8AbABlAF0AOgA6AE8AdQB0AHAAdQB0AEUAbgBjAG8AZABpAG4AZwAgAD0AIABbAFMAeQBzAHQAZQBtAC4AVABlAHgAdAAuAFUAVABGADgARQBuAGMAbwBkAGkAbgBnAF0AOgA6AG4AZQB3ACgAJABmAGEAbABzAGUAKQA7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AFcAcgBpAHQAZQBMAGkAbgBlACgAJwB4U32PKmdnYkyIGv9TX01S7nZVXzp/EVyMW3RlhHbSY/ZOh2X2Tgz/0mP2ToxUTGhil2VR41MaXCpnIFJklgIwJwApADsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoAVwByAGkAdABlAEwAaQBuAGUAKAAnAPeLSFHzUy6VIABaAEkAUAAgAAmQ6WJoUeiQ44mLUyl/DP+NUVNiAF/jiYtTDlSEdodl9k45WdCPTIh4U32P0mP2Ti4AYwBtAGQAAjAnACkAOwAgAFsAQwBvAG4AcwBvAGwAZQBdADoAOgBXAHIAaQB0AGUATABpAG4AZQAoACcADU6BiShXi1MpfwVTl3rjUy1O9HalY9CPTIgb//eLbnikiwxUAE6HZfZOOVmFUQlnIABzAGMAcgBpAHAAdABzAAEwcwByAGMAIACMVCAAcABhAGMAawBhAGcAZQAuAGoAcwBvAG4AAjAnACkA
-pause
-exit /b 1
-
-:node_required
-powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand WwBDAG8AbgBzAG8AbABlAF0AOgA6AE8AdQB0AHAAdQB0AEUAbgBjAG8AZABpAG4AZwAgAD0AIABbAFMAeQBzAHQAZQBtAC4AVABlAHgAdAAuAFUAVABGADgARQBuAGMAbwBkAGkAbgBnAF0AOgA6AG4AZQB3ACgAJABmAGEAbABzAGUAKQA7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AFcAcgBpAHQAZQBMAGkAbgBlACgAJwAaXCpnZ2JMiBr/AJeBiSAATgBvAGQAZQAuAGoAcwAgADIAMgAgABZi9GbYmkhyLGcCMCcAKQA7ACAAWwBDAG8AbgBzAG8AbABlAF0AOgA6AFcAcgBpAHQAZQBMAGkAbgBlACgAJwD3i0hRiVvFiCAATgBvAGQAZQAuAGoAcwAgADIAMgArAAz/zZGwZVNiAF+JW8WIh2X2TjlZDP+NUdCPTIhka2VR41MCMOBlAJcgAG4AcABtACAAaQBuAHMAdABhAGwAbAACMCcAKQA7AA==
-pause
-exit /b 1
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -EncodedCommand WwBDAG8AbgBzAG8AbABlAF0AOgA6AE8AdQB0AHAAdQB0AEUAbgBjAG8AZABpAG4AZwAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBUAGUAeAB0AC4AVQBUAEYAOABFAG4AYwBvAGQAaQBuAGcAKAAkAGYAYQBsAHMAZQApADsAIABbAEMAbwBuAHMAbwBsAGUAXQA6ADoAVwByAGkAdABlAEwAaQBuAGUAKAAnAM1kXE8qZ2diTIga/4lbxYgFUw1OjFt0ZQIw94vzUy6VIABaAEkAUAAgAAmQ6WJoUeiQ44mLUyl/DP9TYgBf44mLUw5UhHaHZfZOOVmNUdCPTIhlUeNTAjAnACkA
+set "scheduler_exit_code=1"
+:finish
+if "%scheduler_pause%"=="1" pause
+exit /b %scheduler_exit_code%

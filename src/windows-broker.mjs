@@ -31,7 +31,7 @@ export function buildBrokerPlan({ paths = getPaths(), nodePath = process.execPat
     `await import(${JSON.stringify(pathToFileURL(path.join(paths.root, 'src', 'daemon.mjs')).href)});`,
     '',
   ].join('\n');
-  const command = `$ErrorActionPreference='Stop'; $worker = Start-Process -FilePath ${quote(nodePath)} -ArgumentList ${quote(`"${launcherPath}"`)} -WorkingDirectory ${quote(paths.root)} -WindowStyle Hidden -Wait -PassThru; exit $worker.ExitCode`;
+  const command = `$ErrorActionPreference='Stop'; Remove-Item Env:NODE_OPTIONS,Env:NODE_PATH -ErrorAction SilentlyContinue; $worker = Start-Process -FilePath ${quote(nodePath)} -ArgumentList ${quote(`"${launcherPath}"`)} -WorkingDirectory ${quote(paths.root)} -WindowStyle Hidden -Wait -PassThru; exit $worker.ExitCode`;
   const actionArguments = `-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ${Buffer.from(command, 'utf16le').toString('base64')}`;
   return { taskName, description, launcherPath, launcherSource, actionExecute: 'powershell.exe', actionArguments, workingDirectory: paths.root };
 }
@@ -45,8 +45,10 @@ async function planForCurrentDirectory() {
 
 async function powershell(script, timeout) {
   const encoded = Buffer.from(`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';\n${script}`, 'utf16le').toString('base64');
+  const env = { ...process.env };
+  delete env.PSModulePath;
   try {
-    const result = await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded], { windowsHide: true, timeout, maxBuffer: 65536 });
+    const result = await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded], { windowsHide: true, timeout, maxBuffer: 65536, env });
     return result.stdout.trim() ? JSON.parse(result.stdout.trim()) : {};
   } catch (error) {
     const detail = String(error.stderr || (error.killed ? 'Windows 后台启动请求超时。' : error.message)).trim();

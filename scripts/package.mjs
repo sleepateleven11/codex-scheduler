@@ -3,16 +3,20 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ROOT, DISTRIBUTION_INCLUDES, writeDistribution } from './plugin-common.mjs';
+import { ROOT, distributionPayload, writeDistribution } from './plugin-common.mjs';
 
 if (process.platform !== 'win32') throw new Error('此打包脚本需要 Windows PowerShell 与 .NET。');
+const args = process.argv.slice(2);
+if (args.length && (args.length !== 2 || args[0] !== '--arch' || !['x64', 'arm64'].includes(args[1]))) throw new Error('仅支持 --arch x64 或 --arch arm64；省略时生成轻量源码包。');
+const arch = args[1];
 const manifest = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
 const dir = path.join(ROOT, 'dist');
 await fs.mkdir(dir, { recursive: true });
-const target = path.join(dir, `codex-scheduler-${manifest.version}.zip`);
+const target = path.join(dir, `codex-scheduler-${manifest.version}${arch ? `-windows-${arch}` : ''}.zip`);
 const temporary = `${target}.${process.pid}.tmp`;
+const files = await distributionPayload(ROOT, { arch });
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-scheduler-distribution-'));
-const includes = DISTRIBUTION_INCLUDES;
+const includes = files.map(file => file.name);
 const quote = value => `'${String(value).replaceAll("'", "''")}'`;
 const script = `
 $ErrorActionPreference = 'Stop'
@@ -89,10 +93,10 @@ try {
 @{ entries=$expected.Count; cmdNames=$cmdNames; extractionVerified=$true } | ConvertTo-Json -Compress
 `;
 try {
-  await writeDistribution(root);
+  await writeDistribution(root, { files });
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   let stdout;
-  try { ({ stdout } = await promisify(execFile)('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded], { cwd: root, windowsHide: true, timeout: 60000, maxBuffer: 1024 * 1024 })); }
+  try { ({ stdout } = await promisify(execFile)('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded], { cwd: root, windowsHide: true, timeout: 180000, maxBuffer: 1024 * 1024 })); }
   catch (error) { throw new Error(String(error.stderr || 'ZIP 打包未完成。').trim()); }
   const verified = JSON.parse(stdout.trim());
   if (!verified.extractionVerified) throw new Error('ZIP 解压验证未完成。');
