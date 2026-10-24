@@ -49,7 +49,7 @@ export class CodexRpcClient extends EventEmitter {
     proc.once('error', error => exited(error));
     proc.once('exit', () => exited(new Error('Codex 连接已关闭。')));
     try {
-      await this.#request('initialize', { clientInfo: { name: 'codex_scheduler', title: 'Codex 定时任务', version: '0.3.3' }, capabilities: { experimentalApi: true } }, 30000);
+      await this.#request('initialize', { clientInfo: { name: 'codex_scheduler', title: 'Codex 定时任务', version: '0.3.4' }, capabilities: { experimentalApi: true } }, 30000);
       this.notify('initialized', {});
       this.ready = true;
     } catch (error) {

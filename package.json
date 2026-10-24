@@ -1,6 +1,6 @@
 {
   "name": "codex-scheduler",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "type": "module",
   "description": "Local Codex plugin for scheduled messages and quota-aware queues.",

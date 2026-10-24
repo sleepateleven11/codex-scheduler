@@ -31,10 +31,42 @@ public static class SchedulerProcessArgv {
   [pscustomobject]@{ pid=[int]$_.ProcessId; executablePath=$_.ExecutablePath; argv=@([SchedulerProcessArgv]::Parse($_.CommandLine)); createdAt=$_.CreationDate.ToUniversalTime().ToString('o') }
 }) | ConvertTo-Json -Depth 5 -Compress
 `;
-  const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 10000, maxBuffer: 1024 * 1024 });
+  const env = { ...process.env };
+  delete env.PSModulePath;
+  const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 10000, maxBuffer: 1024 * 1024, env });
   if (!stdout.trim()) return [];
   const rows = JSON.parse(stdout);
   return Array.isArray(rows) ? rows : [rows];
+}
+
+async function cachedMcpIdentity(script, executable, cacheRoot, stableDirectory) {
+  try {
+    if (typeof executable !== 'string' || typeof script !== 'string' || !path.isAbsolute(executable) || !path.isAbsolute(script) || path.basename(executable).toLowerCase() !== 'node.exe') return false;
+    const parts = path.relative(cacheRoot, script).split(path.sep);
+    if (parts.length !== 3 || !/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(parts[0]) || parts[1].toLowerCase() !== 'src' || parts[2].toLowerCase() !== 'mcp-server.mjs') return false;
+    const root = path.join(cacheRoot, parts[0]);
+    const [manifest, mcp, realCacheRoot, realScript] = await Promise.all([
+      fs.readFile(path.join(root, '.codex-plugin', 'plugin.json'), 'utf8').then(JSON.parse),
+      fs.readFile(path.join(root, '.mcp.json'), 'utf8').then(JSON.parse),
+      fs.realpath(cacheRoot), fs.realpath(script),
+    ]);
+    const realParts = path.relative(realCacheRoot, realScript).split(path.sep);
+    if (realParts.length !== 3 || realParts[0] !== parts[0] || realParts[1].toLowerCase() !== 'src' || realParts[2].toLowerCase() !== 'mcp-server.mjs') return false;
+    const server = mcp.mcpServers?.codex_scheduler;
+    return Boolean(manifest.name === PLUGIN_NAME && manifest.version === parts[0] && manifest.mcpServers === './.mcp.json' && server && samePath(server.command, executable) && (samePath(server.cwd, root) || samePath(server.cwd, stableDirectory)) && Array.isArray(server.args) && server.args.length === 1 && samePath(server.args[0], script));
+  } catch { return false; /* Missing or changed metadata is never permission to stop a process. */ }
+}
+
+async function readableCachedMcp({ cacheRoot, stableDirectory }) {
+  const versions = await fs.readdir(cacheRoot, { withFileTypes: true }).catch(() => []);
+  for (const version of versions.filter(entry => entry.isDirectory() && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(entry.name))) {
+    try {
+      const root = path.join(cacheRoot, version.name);
+      const server = JSON.parse(await fs.readFile(path.join(root, '.mcp.json'), 'utf8')).mcpServers?.codex_scheduler;
+      if (await cachedMcpIdentity(path.join(root, 'src', 'mcp-server.mjs'), server?.command, cacheRoot, stableDirectory)) return true;
+    } catch { /* An unreadable cache cannot authorize process inspection or termination. */ }
+  }
+  return false;
 }
 
 export async function selectCachedSchedulerMcps(rows, { codexHome = getPaths().codexHome, dataDir = getPaths().dataDir } = {}) {
@@ -45,22 +77,8 @@ export async function selectCachedSchedulerMcps(rows, { codexHome = getPaths().c
     if (!row || typeof row !== 'object') continue;
     if (!Number.isInteger(row.pid) || row.pid <= 0 || row.pid === process.pid || !Array.isArray(row.argv) || row.argv.length !== 2) continue;
     const [executable, script] = row.argv;
-    if (typeof executable !== 'string' || typeof script !== 'string' || typeof row.executablePath !== 'string' || !path.isAbsolute(executable) || !path.isAbsolute(script) || path.basename(executable).toLowerCase() !== 'node.exe' || !samePath(executable, row.executablePath)) continue;
-    const parts = path.relative(cacheRoot, script).split(path.sep);
-    if (parts.length !== 3 || !/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(parts[0]) || parts[1].toLowerCase() !== 'src' || parts[2].toLowerCase() !== 'mcp-server.mjs') continue;
-    const root = path.join(cacheRoot, parts[0]);
-    try {
-      const [manifest, mcp, realCacheRoot, realScript] = await Promise.all([
-        fs.readFile(path.join(root, '.codex-plugin', 'plugin.json'), 'utf8').then(JSON.parse),
-        fs.readFile(path.join(root, '.mcp.json'), 'utf8').then(JSON.parse),
-        fs.realpath(cacheRoot), fs.realpath(script),
-      ]);
-      const realParts = path.relative(realCacheRoot, realScript).split(path.sep);
-      if (realParts.length !== 3 || realParts[0] !== parts[0] || realParts[1].toLowerCase() !== 'src' || realParts[2].toLowerCase() !== 'mcp-server.mjs') continue;
-      const server = mcp.mcpServers?.codex_scheduler;
-      if (manifest.name !== PLUGIN_NAME || manifest.version !== parts[0] || manifest.mcpServers !== './.mcp.json' || !server || !samePath(server.command, executable) || !(samePath(server.cwd, root) || samePath(server.cwd, stableDirectory)) || !Array.isArray(server.args) || server.args.length !== 1 || !samePath(server.args[0], script)) continue;
-      selected.push(row);
-    } catch { /* Missing or changed cache metadata is never permission to stop a process. */ }
+    if (typeof row.executablePath !== 'string' || !samePath(executable, row.executablePath)) continue;
+    if (await cachedMcpIdentity(script, executable, cacheRoot, stableDirectory)) selected.push(row);
   }
   return selected;
 }
@@ -81,8 +99,17 @@ export async function stopCachedMcp(candidate) {
 }
 
 export async function stopCachedSchedulerMcps({ codexHome = getPaths().codexHome, dataDir = getPaths().dataDir,
-  listProcesses = cachedMcpProcesses, stopProcess = stopCachedMcp } = {}) {
-  const candidates = await selectCachedSchedulerMcps(await listProcesses(), { codexHome, dataDir });
+  listProcesses = cachedMcpProcesses, stopProcess = stopCachedMcp, log = message => console.log(message) } = {}) {
+  const cacheRoot = path.join(codexHome, 'plugins', 'cache', MARKETPLACE_NAME, PLUGIN_NAME);
+  const stableDirectory = await fs.realpath(dataDir).catch(() => dataDir);
+  if (!await readableCachedMcp({ cacheRoot, stableDirectory })) return { stopped: 0 };
+  let rows;
+  try { rows = await listProcesses(); }
+  catch {
+    log('无法读取本插件旧连接的进程信息；已保留全部进程，继续由 Codex 核验安装或卸载结果。');
+    return { stopped: 0, inspectionUnavailable: true };
+  }
+  const candidates = await selectCachedSchedulerMcps(rows, { codexHome, dataDir });
   for (const candidate of candidates) await stopProcess(candidate);
   return { stopped: candidates.length };
 }

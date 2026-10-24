@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { inspectSchedulerSource, planMarketplaceSource, mcpManifest, portableMcpManifest, distributionPayload, stageInstallationSource, DISTRIBUTION_INCLUDES } from '../scripts/plugin-common.mjs';
-import { installPluginWithRecovery, selectCachedSchedulerMcps } from '../scripts/install.mjs';
+import { installPluginWithRecovery, installOptionalManagerLaunchers, selectCachedSchedulerMcps } from '../scripts/install.mjs';
 import { getPaths } from '../src/paths.mjs';
 import { uninstallPluginWithCleanup } from '../scripts/uninstall.mjs';
 import { stopCachedSchedulerMcps } from '../src/plugin-processes.mjs';
@@ -499,4 +499,99 @@ test('failed Codex uninstall retains the existing manager launchers for retry', 
     removeLaunchers: async () => { events.push('remove-shortcuts'); },
   }), actual => actual === error);
   assert.deepEqual(events, ['stop', 'uninstall']);
+});
+
+test('a clean profile skips Windows process discovery when no readable scheduler cache exists', async t => {
+  const f = await fixture(t);
+  const result = await stopCachedSchedulerMcps({ codexHome: path.join(f.directory, 'new Codex profile'), dataDir: f.directory,
+    listProcesses: async () => assert.fail('fresh installs must not depend on CIM permissions'),
+    stopProcess: async () => assert.fail('no cached connection exists'),
+    log: () => assert.fail('a clean cache is not an inspection failure'),
+  });
+  assert.deepEqual(result, { stopped: 0 });
+});
+
+test('missing or unrelated cache metadata skips process discovery without changing retained files', async t => {
+  for (const invalid of ['missing-script', 'foreign-plugin', 'missing-config']) {
+    const f = await cachedMcpFixture(t);
+    if (invalid === 'missing-script') await fs.unlink(f.row.argv[1]);
+    if (invalid === 'missing-config') await fs.unlink(path.join(f.cachedRoot, '.mcp.json'));
+    if (invalid === 'foreign-plugin') await fs.writeFile(path.join(f.cachedRoot, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'unrelated', version: '0.1.0' }));
+    const before = await fs.readFile(path.join(f.cachedRoot, '.codex-plugin', 'plugin.json'));
+    assert.deepEqual(await stopCachedSchedulerMcps({ codexHome: f.codexHome, dataDir: f.directory,
+      listProcesses: async () => assert.fail('unverified cache cannot authorize inspection'),
+      stopProcess: async () => assert.fail('unverified cache cannot authorize termination'),
+    }), { stopped: 0 });
+    assert.deepEqual(await fs.readFile(path.join(f.cachedRoot, '.codex-plugin', 'plugin.json')), before);
+  }
+});
+
+test('denied CIM inspection leaves every process and cache intact while allowing Codex to determine the install result', async t => {
+  const f = await cachedMcpFixture(t);
+  const before = await fs.readFile(path.join(f.cachedRoot, '.mcp.json'));
+  const warnings = [];
+  const result = await stopCachedSchedulerMcps({ codexHome: f.codexHome,
+    listProcesses: async () => { throw Object.assign(new Error('CIM access denied'), { code: 'EACCES' }); },
+    stopProcess: async () => assert.fail('permission failure never authorizes termination'),
+    log: message => warnings.push(message),
+  });
+  assert.deepEqual(result, { stopped: 0, inspectionUnavailable: true });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /保留全部进程.*Codex.*核验/);
+  assert.deepEqual(await fs.readFile(path.join(f.cachedRoot, '.mcp.json')), before);
+});
+
+test('a restricted-token CIM row missing its executable path is never considered a verified owner', async t => {
+  const f = await cachedMcpFixture(t);
+  assert.deepEqual(await stopCachedSchedulerMcps({ codexHome: f.codexHome,
+    listProcesses: async () => [{ ...f.row, executablePath: null }],
+    stopProcess: async () => assert.fail('missing process identity never authorizes termination'),
+  }), { stopped: 0 });
+});
+
+test('failure to stop a fully verified connection still fails instead of treating it as optional CIM inspection', async t => {
+  const f = await cachedMcpFixture(t);
+  const error = Object.assign(new Error('cannot stop elevated connection'), { code: 'EPERM' });
+  await assert.rejects(stopCachedSchedulerMcps({ codexHome: f.codexHome,
+    listProcesses: async () => [f.row], stopProcess: async () => { throw error; },
+    log: () => assert.fail('a known termination failure must not become a warning'),
+  }), actual => actual === error);
+});
+
+test('CIM denial during lock recovery preserves the actual Codex install failure without retrying or killing', async () => {
+  const original = new Error('failed to back up plugin cache entry: access denied (os error 5)');
+  let attempts = 0;
+  const warnings = [];
+  await assert.rejects(installPluginWithRecovery({ async request() { attempts++; throw original; } }, {}, {
+    platform: 'win32', listProcesses: async () => { throw new Error('CIM permission denied'); },
+    stopProcess: async () => assert.fail('inspection failed'), delay: async () => assert.fail('no retry'),
+    log: message => warnings.push(message),
+  }), actual => actual === original);
+  assert.equal(attempts, 1);
+  assert.match(warnings[0], /未终止任何进程.*安装错误已保留/);
+});
+
+test('desktop permission or foreign shortcut failures report only an optional entrypoint warning', async () => {
+  for (const error of [Object.assign(new Error('desktop access denied'), { code: 'EACCES' }), new Error('已有其他用途的同名快捷方式，未覆盖')]) {
+    const messages = [];
+    const options = { installedRoot: 'already verified local cache', nodePath: 'verified stable runtime' };
+    assert.deepEqual(await installOptionalManagerLaunchers(options, {
+      installLaunchers: async actual => { assert.equal(actual, options); throw error; },
+      log: message => messages.push(message),
+    }), { installed: false, warning: true });
+    assert.equal(messages.length, 2);
+    assert.match(messages[0], /插件已安装并验证通过.*入口未创建/);
+    assert.ok(messages[0].includes(error.message));
+    assert.match(messages[1], /仍可在 Codex.*打开定时任务管理器/);
+  }
+});
+
+test('successful optional entrypoint creation returns the verified shortcut result unchanged', async () => {
+  const messages = [];
+  const entries = { installed: true, shortcuts: ['mock user desktop shortcut', 'mock user start menu shortcut'] };
+  assert.equal(await installOptionalManagerLaunchers({}, {
+    installLaunchers: async () => entries, log: message => messages.push(message),
+  }), entries);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /已创建桌面和开始菜单/);
 });

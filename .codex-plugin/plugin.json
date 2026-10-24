@@ -1,6 +1,6 @@
 {
   "name": "codex-scheduler",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "为 Codex 已有对话安排发送时间，选择项目、模型与思考强度，并在额度恢复后继续排队任务。",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",

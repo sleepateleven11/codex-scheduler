@@ -56,9 +56,19 @@ async function powershell(script, timeout) {
   }
 }
 
+export function brokerTaskLookupScript(taskName) {
+  return `
+try { $task = Get-ScheduledTask -TaskName ${quote(taskName)} -ErrorAction Stop }
+catch {
+  if ($_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound_TaskName*') { $task = $null }
+  else { throw }
+}
+`;
+}
+
 function inspectionScript(plan) {
   return `
-$task = Get-ScheduledTask -TaskName ${quote(plan.taskName)} -ErrorAction SilentlyContinue
+${brokerTaskLookupScript(plan.taskName)}
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $desiredPrincipal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
 $desiredSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -Hidden
@@ -117,7 +127,7 @@ export async function removeBrokerTask() {
   if (process.platform !== 'win32') return { removed: false };
   const plan = await planForCurrentDirectory();
   return powershell(`
-$task = Get-ScheduledTask -TaskName ${quote(plan.taskName)} -ErrorAction SilentlyContinue
+${brokerTaskLookupScript(plan.taskName)}
 if ($task) {
   if ($task.Description -ne ${quote(plan.description)}) { throw '同名计划任务属于其他用途，未删除。' }
   Unregister-ScheduledTask -TaskName ${quote(plan.taskName)} -Confirm:$false

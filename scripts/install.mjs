@@ -15,6 +15,24 @@ import {cachedMcpProcesses, selectCachedSchedulerMcps, stopCachedMcp, stopCached
 export {cachedMcpProcesses, selectCachedSchedulerMcps} from "../src/plugin-processes.mjs";
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// Call only after persisted installation and fresh-session tool discovery pass.
+// Desktop policy or a foreign same-name shortcut must not invalidate that core
+// result; this optional step never catches plugin identity or install failures.
+export async function installOptionalManagerLaunchers(options, {
+  installLaunchers = installManagerLaunchers, log = message => console.log(message),
+} = {}) {
+  try {
+    const entrypoints = await installLaunchers(options);
+    if (entrypoints.installed) log('已创建桌面和开始菜单的“时序任务管理器”，双击即可使用，也可在 Codex 中打开。');
+    else log('插件已安装并验证通过；可在 Codex 中说“打开定时任务管理器”。');
+    return entrypoints;
+  } catch (error) {
+    log(`插件已安装并验证通过；桌面或开始菜单入口未创建：${error.message}`);
+    log('仍可在 Codex 中说“打开定时任务管理器”。');
+    return { installed: false, warning: true };
+  }
+}
+
 export async function installPluginWithRecovery(client, params, {
   platform = process.platform, codexHome = getPaths().codexHome,
   listProcesses = cachedMcpProcesses, stopProcess = stopCachedMcp, delay = pause,
@@ -23,7 +41,13 @@ export async function installPluginWithRecovery(client, params, {
   try { return await client.request('plugin/install', params, 90000); }
   catch (error) {
     if (platform !== 'win32' || !/failed to back up plugin cache entry/i.test(error.message) || !/(?:os error\s*5|access.+denied|拒绝访问)/i.test(error.message)) throw error;
-    const candidates = await selectCachedSchedulerMcps(await listProcesses(), { codexHome });
+    let rows;
+    try { rows = await listProcesses(); }
+    catch {
+      log('无法读取本插件旧连接的进程信息，未终止任何进程；Codex 返回的安装错误已保留。');
+      throw error;
+    }
+    const candidates = await selectCachedSchedulerMcps(rows, { codexHome });
     if (!candidates.length) throw error;
     log('旧的定时插件连接占用安装缓存；仅关闭已验证属于本插件的工具连接后重试一次。');
     for (const candidate of candidates) await stopProcess(candidate);
@@ -94,9 +118,7 @@ async function main() {
     const tools = await verifyTools(client);
     console.log(`新会话已发现 ${tools.length} 个定时任务工具。`);
   } finally { await client.close(); }
-  const entrypoints = await installManagerLaunchers({ installedRoot, nodePath: stableNodePath });
-  if (entrypoints.installed) console.log('已创建桌面和开始菜单的“时序任务管理器”，双击即可使用，也可在 Codex 中打开。');
-  else console.log('可运行 npm run open，或在 Codex 中说“打开定时任务管理器”。');
+  await installOptionalManagerLaunchers({ installedRoot, nodePath: stableNodePath });
 }
 
 if (process.argv[1] && samePath(process.argv[1], fileURLToPath(import.meta.url))) {
