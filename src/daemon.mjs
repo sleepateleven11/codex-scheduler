@@ -6,14 +6,15 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getPaths } from './paths.mjs';
 import { CodexAdapter } from './codex-adapter.mjs';
 import { QueueManager } from './queue.mjs';
+import { QuotaCycleManager } from './quota-cycle.mjs';
 import { PreferencesStore } from './preferences.mjs';
 import { DiagnosticsService } from './diagnostics.mjs';
 
 const paths = getPaths();
-const version = '0.3.4';
+const version = '0.4.0';
 const preferences = new PreferencesStore(paths.configPath);
 const startedAt = new Date().toISOString();
-let lockHandle; let server; let mutexServer; let queue; let adapter; let diagnostics; let endpoint; let stopping = false;
+let lockHandle; let server; let mutexServer; let queue; let quotaCycles; let adapter; let diagnostics; let endpoint; let stopping = false;
 const mutexSockets = new Set();
 
 function alive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
@@ -76,7 +77,8 @@ function authorized(request) {
   const a = Buffer.from(token); const b = Buffer.from(endpoint.token);
   return a.length === b.length && timingSafeEqual(a, b);
 }
-function workerState() { return { status: stopping ? 'stopping' : queue.lastTickError ? 'attention' : 'running', startedAt, version, lastError: queue.lastTickError }; }
+function workerState() { const lastError = queue.lastTickError || quotaCycles?.lastTickError || null; return { status: stopping ? 'stopping' : lastError ? 'attention' : 'running', startedAt, version, lastError }; }
+function acceptingChanges() { if (stopping) throw Object.assign(new Error('后台正在停止，请稍后重新打开插件。'), { statusCode: 503 }); }
 async function route(request, response) {
   const origin = `http://127.0.0.1:${endpoint.port}`;
   if (request.headers.host !== `127.0.0.1:${endpoint.port}` && request.headers.host !== `localhost:${endpoint.port}`) return json(response, 403, { message: '无效的访问地址。' });
@@ -102,16 +104,42 @@ async function route(request, response) {
     if (request.method === 'GET' && url.pathname === '/api/bootstrap') {
       const probes = await Promise.allSettled([adapter.projects(), adapter.models(), adapter.getQuota(), adapter.desktopStatus(), preferences.read(), diagnostics.run()]);
       const value = (index, fallback) => probes[index].status === 'fulfilled' ? probes[index].value : fallback;
-      return json(response, 200, { projects: value(0, []), models: value(1, []), quota: value(2, null), desktop: value(3, { connected: false }), preferences: value(4, {}), diagnostics: value(5, null), worker: workerState(), tasks: queue.list(), timeZone: 'Asia/Shanghai' });
+      return json(response, 200, { projects: value(0, []), models: value(1, []), quota: value(2, null), desktop: value(3, { connected: false }), preferences: value(4, {}), diagnostics: value(5, null), worker: workerState(), tasks: queue.list(), quotaCycles: quotaCycles.list(), timeZone: 'Asia/Shanghai' });
     }
     if (request.method === 'GET' && url.pathname === '/api/threads') return json(response, 200, { threads: await adapter.threads(url.searchParams.get('projectPath') || '') });
     if (request.method === 'GET' && url.pathname === '/api/quota') return json(response, 200, await adapter.getQuota(url.searchParams.get('model'), { refresh: true }));
-    if (request.method === 'GET' && url.pathname === '/api/tasks') return json(response, 200, { tasks: queue.list(), worker: workerState(), quota: await adapter.getQuota(), desktop: await adapter.desktopStatus(), diagnostics: await diagnostics.run() });
+    if (request.method === 'GET' && url.pathname === '/api/tasks') return json(response, 200, { tasks: queue.list(), quotaCycles: quotaCycles.list(), worker: workerState(), quota: await adapter.getQuota(), desktop: await adapter.desktopStatus(), diagnostics: await diagnostics.run() });
+    if (request.method === 'GET' && url.pathname === '/api/quota-cycles') return json(response, 200, { rules: quotaCycles.list() });
+    if (request.method === 'POST' && url.pathname === '/api/quota-cycles') {
+      const input = await body(request);
+      const report = await diagnostics.run({ refresh: true });
+      if (!report.ready) throw new Error('首次配置或连接自检尚未通过，请先完成页面上的检测步骤。');
+      const validated = await adapter.validateTask({ ...input, sendMode: 'scheduled', runAt: new Date().toISOString() });
+      acceptingChanges();
+      return json(response, 201, { rule: await quotaCycles.create(validated) });
+    }
+    const cycleAction = /^\/api\/quota-cycles\/([a-f0-9-]+)\/action$/.exec(url.pathname);
+    if (request.method === 'POST' && cycleAction) {
+      const input = await body(request);
+      if (!['pause', 'resume'].includes(input.action)) throw new Error('额度循环仅支持暂停或恢复。');
+      if (input.action === 'resume') await adapter.validateTask(quotaCycles.get(cycleAction[1]));
+      acceptingChanges();
+      return json(response, 200, { rule: await quotaCycles[input.action](cycleAction[1]) });
+    }
+    const cycleMatch = /^\/api\/quota-cycles\/([a-f0-9-]+)$/.exec(url.pathname);
+    if (request.method === 'DELETE' && cycleMatch) return json(response, 200, await quotaCycles.delete(cycleMatch[1]));
+    if (request.method === 'PATCH' && cycleMatch) {
+      const patch = await body(request);
+      const validated = await adapter.validateTask({ ...quotaCycles.get(cycleMatch[1]), ...patch });
+      acceptingChanges();
+      return json(response, 200, { rule: await quotaCycles.update(cycleMatch[1], { ...patch, executionPath: validated.executionPath, projectLabel: validated.projectLabel, threadTitle: validated.threadTitle }) });
+    }
     if (request.method === 'POST' && url.pathname === '/api/tasks') {
       const input = await body(request);
       const report = await diagnostics.run({ refresh: true });
       if (!report.ready) throw new Error('首次配置或连接自检尚未通过，请先完成页面上的检测步骤。');
       const validated = await adapter.validateTask(input);
+      acceptingChanges();
       const task = await queue.create(validated);
       return json(response, 201, { task });
     }
@@ -128,6 +156,7 @@ async function route(request, response) {
     if (request.method === 'DELETE' && taskMatch) return json(response, 200, await queue.delete(taskMatch[1]));
     if (request.method === 'PATCH' && taskMatch) {
       const patch = await body(request); const validated = await adapter.validateTask({ ...queue.get(taskMatch[1]), ...patch });
+      acceptingChanges();
       return json(response, 200, { task: await queue.update(taskMatch[1], { ...patch, executionPath: validated.executionPath, projectLabel: validated.projectLabel, threadTitle: validated.threadTitle }) });
     }
     return json(response, 404, { message: '未找到该功能。' });
@@ -143,7 +172,11 @@ async function shutdown() {
   if (shutdown.promise) return shutdown.promise;
   stopping = true;
   shutdown.promise = (async () => {
-    try { await queue?.stop(); }
+    try {
+      const results = await Promise.allSettled([quotaCycles?.stop(), queue?.stop()]);
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
+    }
     finally {
       try { await adapter?.close(); }
       finally {
@@ -173,6 +206,8 @@ try {
   diagnostics = new DiagnosticsService({ adapter, paths });
   queue = new QueueManager({ storePath: paths.storePath, adapter, maxConcurrent: 1 });
   await queue.initialize();
+  quotaCycles = new QuotaCycleManager({ storePath: paths.quotaCyclesPath, queue, adapter });
+  await quotaCycles.initialize();
   const token = randomBytes(32).toString('hex');
   server = http.createServer((request, response) => { void route(request, response).catch(error => { if (!response.headersSent) json(response, [409, 503].includes(error.statusCode) ? error.statusCode : 400, { error: ['task_busy', 'creation_deleted', 'deletion_persist_failed'].includes(error.code) ? error.code : 'operation_failed', message: error.message }); else response.destroy(); }); });
   server.requestTimeout = 60000;
@@ -181,6 +216,7 @@ try {
   endpoint = { pid: process.pid, port: server.address().port, token, startedAt, version };
   await fs.writeFile(paths.endpointPath, JSON.stringify(endpoint), { mode: 0o600 });
   queue.start();
+  quotaCycles.start();
   console.log(`${new Date().toISOString()} Scheduler worker ready`);
   process.on('SIGTERM', () => { void shutdown().catch(logShutdownError); });
   process.on('SIGINT', () => { void shutdown().catch(logShutdownError); });

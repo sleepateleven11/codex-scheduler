@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const ui = globalThis.SchedulerUI;
   const state = {
-    projects: [], models: [], threads: [], tasks: [], quota: null, worker: null, desktop: null,
+    projects: [], models: [], threads: [], tasks: [], quotaCycles: [], quota: null, worker: null, desktop: null,
     timeZone: "Asia/Shanghai", filter: "active", connected: false,
     loadingThreads: false, threadRequest: 0, polling: false, submitting: false,
     taskSignature: "", toastTimeout: null, actionPending: new Set(), token: "", pendingCreation: null,
@@ -13,7 +13,8 @@
     diagnostics: null, checkingSetup: false, setupReported: false, diagnosticsSignature: "",
     pendingActions: new Map(), threadError: null, selectedThreadId: "", renderedFilter: "active", bootstrapping: false,
     deletedTaskIds: new Set(),
-    alerts: { general: null, connection: null, desktop: null },
+    loadedCycles: false, cycleSignature: "", cycleRevision: 0, cyclePending: new Map(), deletedCycleIds: new Set(),
+    alerts: { general: null, connection: null, desktop: null, cycles: null },
   };
   const labels = {
     scheduled: "待执行", queued: "排队中", waiting_quota: "等待额度", waiting_quota_reset: "等待额度",
@@ -161,6 +162,7 @@
       if (data.worker) state.worker = data.worker;
       if (data.quota !== undefined) state.quota = data.quota;
       receiveTasks(data.tasks || []);
+      receiveCycles(data.quotaCycles || []);
       connection(true); updateDesktop(data.desktop); updateDiagnostics(data.diagnostics);
       populateProjects(data); populateModels();
       $("schedule-fields").disabled = false;
@@ -305,7 +307,7 @@
     setQuickTime(60);
   }
   function setQuickTime(minutes) {
-    if ($("quota-trigger").checked) return;
+    if ($("quota-trigger").checked || $("cycle-trigger").checked) return;
     const date = new Date(Math.ceil((Date.now() + minutes * 60 * 1000) / 60000) * 60000);
     date.setSeconds(0, 0);
     $("run-at").value = asInput(date, $("timezone-select").value);
@@ -315,7 +317,8 @@
   function updateTimePreview() {
     const zone = $("timezone-select").value;
     $("footer-timezone").textContent = zone;
-    if ($("quota-trigger").checked) { $("time-preview").textContent = "仅适用于这项任务；额度可用后只发送一次。"; return; }
+    $("time-preview").hidden = $("cycle-trigger").checked || $("quota-trigger").checked;
+    if ($("time-preview").hidden) return;
     if (!$("run-at").value) { $("time-preview").textContent = "到达设定时间后进入执行队列。"; return; }
     try {
       const iso = zonedTimeToISO($("run-at").value, zone);
@@ -324,15 +327,21 @@
   }
   function updateSendMode() {
     const quota = $("quota-trigger").checked;
-    $("scheduled-time-controls").hidden = quota;
-    $("run-at").required = !quota;
-    $("run-at").disabled = quota;
-    $("run-at-required").hidden = quota;
-    for (const button of document.querySelectorAll(".quick-times button")) button.disabled = quota;
-    $("timezone-select").disabled = quota;
+    const cycle = $("cycle-trigger").checked;
+    const automatic = quota || cycle;
+    if (!automatic) $("scheduled-trigger").checked = true;
+    $("scheduled-time-controls").hidden = automatic;
+    $("run-at").required = !automatic;
+    $("run-at").disabled = automatic;
+    $("run-at-required").hidden = automatic;
+    for (const button of document.querySelectorAll(".quick-times button")) button.disabled = automatic;
+    $("timezone-select").disabled = false;
     $("quota-trigger-help").hidden = !quota;
     $("quota-trigger-help").textContent = ui.quotaTriggerHint();
-    $("quota-trigger").closest(".quota-trigger-option").classList.toggle("selected", quota);
+    $("cycle-trigger-help").hidden = !cycle;
+    $("cycle-trigger-help").textContent = ui.cycleTriggerHint(state.quota);
+    $("prompt-help").textContent = cycle ? "每轮重复发送此内容，实际用量由模型决定。" : "发送到所选对话。";
+    for (const trigger of ["scheduled-trigger", "quota-trigger", "cycle-trigger"]) $(trigger).closest(".quota-trigger-option").classList.toggle("selected", $(trigger).checked);
     updateTimePreview();
     setComposerMode();
   }
@@ -497,6 +506,7 @@
   }
   function renderQuota() {
     const quota = state.quota;
+    $("cycle-trigger-help").textContent = ui.cycleTriggerHint(quota);
     const card = $("quota-label").closest(".quota-card");
     card.classList.remove("waiting", "unknown");
     if (!quota || quota.allowed === null || quota.allowed === undefined) {
@@ -506,14 +516,15 @@
       return;
     }
     const windows = Array.isArray(quota.windows) ? quota.windows : [];
-    const remaining = windows.filter((window) => window.usedPercent !== null && window.usedPercent !== undefined && Number.isFinite(Number(window.usedPercent))).map((window) => Math.max(0, 100 - Number(window.usedPercent)));
+    const validUsage = windows.filter((window) => ui.quotaRemainingText(window.usedPercent)).map((window) => window.usedPercent);
+    const summary = ui.quotaWindowSummary(windows);
     if (quota.allowed === false) {
       card.classList.add("waiting");
       $("quota-label").textContent = "等待额度恢复";
       $("quota-description").textContent = quota.resetAt ? "预计额度恢复还需 " + ui.remainingTime(quota.resetAt) : "任务会保留，并自动重试";
     } else {
       $("quota-label").textContent = "额度可用";
-      $("quota-description").textContent = remaining.length ? "当前限制窗口至少剩余 " + Math.round(Math.min(...remaining)) + "%" : "任务将按计划进入执行队列";
+      $("quota-description").textContent = summary || (validUsage.length ? "当前限制窗口至少剩余 " + ui.quotaRemainingText(Math.max(...validUsage)) : "任务将按计划进入执行队列");
     }
     if (quota.reason) card.title = String(quota.reason);
     else card.removeAttribute("title");
@@ -571,6 +582,7 @@
     time.append(icon("clock"), element("span", "", quotaTrigger ? ui.taskTriggerText(task) : formatDate(task.runAt || task.scheduledAt, zone)));
     time.title = quotaTrigger ? "每 30 秒检测所选模型额度；额度可用时发送一次" : formatDate(task.runAt || task.scheduledAt, zone, true) + " · " + zone;
     meta.append(time, element("span", "task-model", modelName(task.model) + (task.effort ? " · " + ({ none: "无", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高", ultra: "超高" }[task.effort] || task.effort) : "")));
+    if (state.quotaCycles.some((rule) => rule.activeTaskId === task.id || rule.lastTaskId === task.id)) meta.append(element("span", "task-model", "额度循环"));
     card.append(top, destination, meta);
     const countdown = element("p", "task-countdown", ui.taskCountdown(task));
     countdown.dataset.countdownTask = task.id;
@@ -612,6 +624,8 @@
       node.textContent = ui.taskCountdown(tasks.get(node.dataset.countdownTask) || {});
       node.hidden = !node.textContent;
     }
+    const rules = new Map(state.quotaCycles.map((rule) => [rule.id, rule]));
+    for (const node of document.querySelectorAll("[data-countdown-cycle]")) node.textContent = ui.cycleCountdown(rules.get(node.dataset.countdownCycle) || {});
     if (state.quota?.allowed === false && state.quota.resetAt) renderQuota();
   }
   function receiveTasks(tasks) {
@@ -662,7 +676,7 @@
       $("empty-description").textContent = state.filter === "completed" ? "每一项完成的任务，都能在这里回看结果。" : state.tasks.length ? "你可以安排下一项任务，或切换到全部查看记录。" : "创建第一个定时任务，\n到时间，时序会帮你继续对话。";
       $("empty-description").style.whiteSpace = "pre-line";
     }
-    const signature = JSON.stringify([state.filter, tasks, state.connected, state.submitting, state.loadingDraft, state.checkingSetup, Array.from(state.actionPending), Array.from(state.pendingActions)]);
+    const signature = JSON.stringify([state.filter, tasks, state.quotaCycles.map((rule) => [rule.activeTaskId, rule.lastTaskId]), state.connected, state.submitting, state.loadingDraft, state.checkingSetup, Array.from(state.actionPending), Array.from(state.pendingActions)]);
     if (!force && signature === state.taskSignature) return;
     state.taskSignature = signature;
     const open = new Set(Array.from(document.querySelectorAll(".task-details[open]"), (node) => node.dataset.taskId));
@@ -687,21 +701,172 @@
       (replacement && !replacement.disabled ? replacement : fallback)?.focus({ preventScroll: true });
     }
   }
+  function receiveCycles(rules, readRevision = state.cycleRevision) {
+    if (!Array.isArray(rules) || readRevision < state.cycleRevision) return;
+    state.quotaCycles = rules.filter((rule) => rule && typeof rule.id === "string" && !state.deletedCycleIds.has(rule.id));
+    state.loadedCycles = true;
+  }
+  function upsertCycle(rule) {
+    if (!rule?.id) return;
+    state.cycleRevision++;
+    const index = state.quotaCycles.findIndex((item) => item.id === rule.id);
+    if (index >= 0) state.quotaCycles[index] = rule; else state.quotaCycles.push(rule);
+    state.loadedCycles = true;
+  }
+  function cycleActionFocus(id, action) {
+    return Array.from($("cycle-list").querySelectorAll(".cycle-action")).find((button) => button.dataset.cycleId === id && button.dataset.action === action && !button.disabled)
+      || Array.from($("cycle-list").querySelectorAll(".cycle-details")).find((node) => node.dataset.cycleId === id)?.querySelector("summary") || $("cycle-title");
+  }
+  function viewCycleTask(rule) {
+    const taskId = rule.activeTaskId || rule.lastTaskId;
+    if (!state.tasks.some((task) => task.id === taskId)) { toast("本轮任务暂未出现在列表，请刷新后查看。", true); return; }
+    setFilter("all");
+    const card = Array.from($("task-list").children).find((item) => item.dataset.taskId === taskId);
+    if (card) {
+      card.querySelector("details").open = true;
+      card.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+      card.querySelector("summary")?.focus({ preventScroll: true });
+    }
+  }
+  function cycleActionButton(rule, action, text, className = "") {
+    const pending = state.cyclePending.get(rule.id) === action;
+    const busyLabels = { pause: "暂停中…", resume: "恢复中…", delete: "删除中…", copy: "载入中…" };
+    const button = element("button", "task-action cycle-action " + className + (pending ? " is-loading" : ""), pending ? busyLabels[action] || "处理中…" : text);
+    button.type = "button";
+    button.dataset.cycleId = rule.id; button.dataset.action = action;
+    button.disabled = state.cyclePending.has(rule.id) || !state.connected || state.submitting || state.loadingDraft || state.checkingSetup || state.bootstrapping;
+    button.setAttribute("aria-busy", String(pending));
+    button.setAttribute("aria-label", text + "：" + String(rule.prompt || "额度循环").split("\n")[0].slice(0, 80));
+    if (!state.connected) button.title = "连接恢复后可操作，循环记录已保留。";
+    button.addEventListener("click", () => actOnCycle(rule, action));
+    return button;
+  }
+  function renderCycle(rule, open, targetIds) {
+    const presentation = ui.cycleStatus(rule);
+    const card = element("article", "task-card cycle-card status-" + presentation.tone);
+    card.dataset.cycleId = rule.id;
+    const top = element("div", "task-top");
+    const title = String(rule.prompt || "额度循环").trim().split("\n")[0] || "额度循环";
+    const heading = element("h3", "task-title", title); heading.title = title;
+    top.append(heading, element("span", "status-chip " + presentation.tone, presentation.label));
+    const destination = element("div", "task-destination");
+    destination.append(icon("chat"), element("span", "", rule.projectLabel || rule.projectPath?.split(/[\\/]/).filter(Boolean).pop() || "所选项目"), element("span", "destination-divider", "/"), element("span", "", rule.threadTitle || "所选对话"));
+    const shortId = targetIds.get(rule.threadId);
+    if (shortId) destination.append(element("span", "destination-id", "#" + shortId));
+    destination.title = (rule.projectPath || "") + " / " + (rule.threadTitle || "") + (rule.threadId ? " · " + rule.threadId : "");
+    const meta = element("div", "task-meta");
+    meta.append(element("span", "task-model", modelName(rule.model) + (rule.effort ? " · " + ({ none: "无", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高", ultra: "超高" }[rule.effort] || rule.effort) : "")), element("span", "cycle-count", "已完成 " + ui.cycleCompletedCount(rule) + " 轮"));
+    const countdown = element("p", "task-countdown", ui.cycleCountdown(rule)); countdown.dataset.countdownCycle = rule.id;
+    const stats = element("dl", "cycle-stats");
+    const zone = rule.timeZone || state.timeZone;
+    for (const [label, value] of [["下次额度刷新", rule.nextResetAt ? formatDate(rule.nextResetAt, zone) : "等待服务端确认"], ["下次检测", rule.enabled === false ? "恢复后继续检测" : rule.nextCheckAt ? formatDate(rule.nextCheckAt, zone) : "等待调度"], ["最近发送", rule.lastSentAt ? formatDate(rule.lastSentAt, zone) : "尚未发送"], ["最近任务", labels[rule.lastTaskStatus] || (rule.activeTaskId ? "已加入队列" : "尚未安排")]]) {
+      const item = element("div"); item.append(element("dt", "", label), element("dd", "", value)); stats.append(item);
+    }
+    card.append(top, destination, meta, countdown, stats);
+    if (rule.lastError) card.append(element("p", ["error", "needs_review"].includes(rule.status) ? "task-error-note" : "task-wait-note", friendlyMessage(String(rule.lastError), rule.status)));
+    const bottom = element("div", "task-bottom");
+    const details = element("details", "cycle-details"); details.dataset.cycleId = rule.id; details.open = open;
+    details.append(element("summary", "", "查看循环内容"));
+    const detailContent = element("div", "task-details-content");
+    detailContent.append(element("p", "detail-label", "每轮发送的内容"), element("pre", "", rule.prompt || ""));
+    if (rule.lastResult) detailContent.append(element("p", "detail-label", "最近一轮结果"), element("pre", "", typeof rule.lastResult === "string" ? rule.lastResult : JSON.stringify(rule.lastResult, null, 2)));
+    details.append(detailContent);
+    const actions = element("div", "task-actions");
+    if (state.tasks.some((task) => task.id === (rule.activeTaskId || rule.lastTaskId))) actions.append(cycleActionButton(rule, "view", rule.activeTaskId ? "查看本轮任务" : "查看最近任务"));
+    actions.append(cycleActionButton(rule, "copy", "复制为新循环"));
+    actions.append(cycleActionButton(rule, rule.enabled === false || rule.status === "paused" ? "resume" : "pause", rule.enabled === false || rule.status === "paused" ? "继续循环" : "暂停"));
+    actions.append(cycleActionButton(rule, "delete", "删除", "delete"));
+    bottom.append(details, actions); card.append(bottom);
+    return card;
+  }
+  function renderCycles(force = false) {
+    $("cycle-total").textContent = state.quotaCycles.length;
+    $("cycle-jump-count").textContent = state.quotaCycles.length;
+    if (!state.loadedCycles) return;
+    $("cycles-loading").hidden = true;
+    $("cycles-empty").hidden = state.quotaCycles.length > 0;
+    $("cycle-list").tabIndex = state.quotaCycles.length ? 0 : -1;
+    const signature = JSON.stringify([state.quotaCycles, state.tasks.map((task) => task.id), state.connected, state.submitting, state.loadingDraft, state.checkingSetup, state.bootstrapping, Array.from(state.cyclePending)]);
+    if (!force && signature === state.cycleSignature) return;
+    state.cycleSignature = signature;
+    const open = new Set(Array.from($("cycle-list").querySelectorAll(".cycle-details[open]"), (node) => node.dataset.cycleId));
+    const scroll = $("cycle-list").scrollTop;
+    const focused = document.activeElement;
+    const focusRule = focused?.dataset?.cycleId || focused?.closest(".cycle-details")?.dataset.cycleId;
+    const focusAction = focused?.dataset?.action;
+    const targetIds = ui.shortThreadIds(state.quotaCycles.map((rule) => ({ id: rule.threadId })));
+    $("cycle-list").replaceChildren(...state.quotaCycles.map((rule) => renderCycle(rule, open.has(rule.id), targetIds)));
+    $("cycle-list").scrollTop = scroll;
+    if (focusRule) cycleActionFocus(focusRule, focusAction)?.focus({ preventScroll: true });
+  }
+  async function draftCycle(rule) {
+    state.loadingDraft = true;
+    state.editingId = null; state.draftSnapshot = null; state.pendingCreation = null;
+    $("form-error").hidden = true; $("schedule-fields").disabled = true;
+    setComposerMode();
+    try {
+      const missing = await fillComposer({ ...rule, cycleMode: true });
+      $("draft-note").textContent = "已复制为草稿，点击启用后生效。" + (missing.length ? " " + missing.join("；") + "。" : "");
+      $("draft-note").hidden = false;
+      if (missing.length) { $("form-error").textContent = missing.join("；") + "。"; $("form-error").hidden = false; }
+    } finally {
+      state.loadingDraft = false; $("schedule-fields").disabled = false; setComposerMode();
+      $("compose-title").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+      $("prompt-input").focus({ preventScroll: true });
+    }
+  }
+  function confirmCycleDeletion(rule) {
+    const dialog = $("cycle-delete-dialog");
+    $("cycle-delete-target").textContent = String(rule.prompt || "额度循环").split("\n")[0].slice(0, 160);
+    $("cycle-delete-description").textContent = ui.cycleDeleteConfirmation();
+    if (!dialog || typeof dialog.showModal !== "function") return Promise.resolve(window.confirm("删除这项额度循环？\n" + ui.cycleDeleteConfirmation()));
+    if (document.querySelector(".confirm-dialog[open]")) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      dialog.returnValue = "cancel";
+      dialog.addEventListener("close", () => { cycleActionFocus(rule.id, "delete")?.focus({ preventScroll: true }); resolve(dialog.returnValue === "delete"); }, { once: true });
+      dialog.showModal();
+    });
+  }
+  async function actOnCycle(rule, action) {
+    if (state.cyclePending.has(rule.id) || state.submitting || state.loadingDraft || state.checkingSetup || !state.connected) return;
+    if (action === "view") return viewCycleTask(rule);
+    if (action === "delete" && !await confirmCycleDeletion(rule)) return;
+    const current = state.quotaCycles.find((item) => item.id === rule.id);
+    if (!current || state.cyclePending.has(rule.id) || state.submitting || state.loadingDraft || state.checkingSetup || !state.connected) return;
+    state.cyclePending.set(rule.id, action); renderCycles();
+    try {
+      if (action === "copy") return await draftCycle(current);
+      const response = await api("/api/quota-cycles/" + encodeURIComponent(rule.id) + (action === "delete" ? "" : "/action"), { method: action === "delete" ? "DELETE" : "POST", ...(action === "delete" ? {} : { body: JSON.stringify({ action }) }) });
+      if (action === "delete") {
+        state.cycleRevision++; state.deletedCycleIds.add(rule.id); state.quotaCycles = state.quotaCycles.filter((item) => item.id !== rule.id);
+        if (response.deletedTaskId) { state.deletedTaskIds.add(response.deletedTaskId); retainDraftAfterDeletion(response.deletedTaskId); state.tasks = state.tasks.filter((item) => item.id !== response.deletedTaskId); renderTasks(true); }
+      } else upsertCycle(response.rule || response);
+      showAlert("", "warning", "cycles");
+      toast(action === "delete" ? "额度循环已删除" : action === "pause" ? "额度循环已暂停" : "额度循环已恢复");
+      renderCycles(true);
+      if (action === "delete") $("cycle-title").focus({ preventScroll: true });
+      await poll(true);
+    } catch (error) { showAlert("额度循环未能更新：" + readableError(error) + " 原记录已保留。", "error", "cycles"); }
+    finally { state.cyclePending.delete(rule.id); renderCycles(); setComposerMode(); }
+  }
   function snapshotForm() {
-    return { projectPath: $("project-select").value, threadId: $("thread-select").value, model: $("model-select").value, effort: $("effort-select").value, timeZone: $("timezone-select").value, sendMode: $("quota-trigger").checked ? "quota_available" : "scheduled", runAtInput: $("run-at").value, prompt: $("prompt-input").value };
+    return { projectPath: $("project-select").value, threadId: $("thread-select").value, model: $("model-select").value, effort: $("effort-select").value, timeZone: $("timezone-select").value, sendMode: $("quota-trigger").checked ? "quota_available" : "scheduled", cycleMode: $("cycle-trigger").checked, runAtInput: $("run-at").value, prompt: $("prompt-input").value };
   }
   function setComposerMode() {
     const editing = !!state.editingId;
+    const cycle = $("cycle-trigger").checked;
     const deletingEditedTask = editing && state.pendingActions.get(state.editingId) === "delete";
-    $("compose-title").textContent = editing ? "编辑定时任务" : "安排一个任务";
-    $("compose-kicker").textContent = editing ? "修改任务" : "新建任务";
-    $("submit-button").querySelector("span").textContent = state.submitting ? editing ? "正在保存…" : "正在创建…" : state.loadingDraft ? "正在载入…" : editing ? "保存修改" : $("quota-trigger").checked ? "创建额度任务" : "创建定时任务";
+    $("compose-title").textContent = editing ? "编辑定时任务" : cycle ? "开启额度循环" : "安排一个任务";
+    $("compose-kicker").textContent = editing ? "修改任务" : cycle ? "每轮自动发送" : "新建任务";
+    $("submit-button").querySelector("span").textContent = state.submitting ? editing ? "正在保存…" : cycle ? "正在启用…" : "正在创建…" : state.loadingDraft ? "正在载入…" : editing ? "保存修改" : cycle ? "启用额度循环" : $("quota-trigger").checked ? "创建额度任务" : "创建定时任务";
     $("submit-button").classList.toggle("is-loading", state.submitting || state.loadingDraft);
     $("submit-button").setAttribute("aria-busy", String(state.submitting || state.loadingDraft));
     $("schedule-form").setAttribute("aria-busy", String(state.submitting || state.loadingDraft));
     $("cancel-edit").hidden = !editing;
     $("cancel-edit").disabled = state.submitting || state.loadingDraft || deletingEditedTask;
     $("cancel-edit").textContent = "取消编辑";
+    $("cycle-trigger").disabled = editing;
+    $("cycle-trigger").closest("label").title = editing ? "请先取消任务编辑，再创建独立的额度循环。" : "";
     const editingLocked = editing && !ui.canEditTask(state.tasks.find((task) => task.id === state.editingId) || {});
     const blocked = ui.submissionBlockReason({ connected: state.connected, diagnostics: state.diagnostics, thread: state.threads.find((thread) => thread.id === $("thread-select").value) });
     $("submit-button").disabled = state.submitting || state.loadingDraft || state.loadingThreads || state.checkingSetup || state.bootstrapping || deletingEditedTask || editingLocked || !!blocked;
@@ -713,6 +878,7 @@
     $("diagnostics-button").disabled = state.submitting || state.loadingDraft || state.checkingSetup || state.reconnecting;
     renderServices();
     if (state.loadedTasks) renderTasks();
+    renderCycles();
   }
   function selectTimeZone(timeZone) {
     try { new Intl.DateTimeFormat("zh-CN", { timeZone }); }
@@ -732,6 +898,8 @@
     if (Array.from($("effort-select").options).some((option) => option.value === fields.effort)) $("effort-select").value = fields.effort;
     selectTimeZone(fields.timeZone || state.timeZone);
     $("quota-trigger").checked = ui.taskSendMode(fields) === "quota_available";
+    $("cycle-trigger").checked = fields.cycleMode === true;
+    $("scheduled-trigger").checked = !$("quota-trigger").checked && !$("cycle-trigger").checked;
     $("run-at").value = fields.runAtInput || asInput(new Date(Date.now() + 3600000), $("timezone-select").value);
     $("prompt-input").value = fields.prompt || "";
     updatePromptCount(); updateSendMode();
@@ -906,10 +1074,12 @@
   async function poll(manual = false) {
     if (state.polling) return;
     state.polling = true;
+    const cycleReadRevision = state.cycleRevision;
     if (manual) { $("refresh-button").disabled = true; $("refresh-button").classList.add("is-loading"); $("refresh-button").setAttribute("aria-busy", "true"); }
     try {
       const data = await api("/api/tasks");
       receiveTasks(data.tasks || []);
+      receiveCycles(data.quotaCycles || [], cycleReadRevision);
       if (data.worker) state.worker = data.worker;
       if (data.quota !== undefined) state.quota = data.quota;
       connection(true);
@@ -927,8 +1097,10 @@
     $("form-error").hidden = true;
     let payload;
     const editingId = state.editingId;
+    const cycleMode = $("cycle-trigger").checked;
     try {
       if (state.loadingDraft) return;
+      if (editingId && cycleMode) throw new Error("请先取消任务编辑，再创建独立的额度循环。");
       if (editingId && state.pendingActions.get(editingId) === "delete") throw new Error("原任务正在删除，请稍候；表单内容会保留为新草稿。");
       if (state.checkingSetup || state.loadingThreads) throw new Error("正在检查配置或读取对话，请稍候。");
       const blocked = ui.submissionBlockReason({ connected: state.connected, diagnostics: state.diagnostics, thread: state.threads.find((thread) => thread.id === $("thread-select").value) });
@@ -944,7 +1116,7 @@
       if (!threadId) { $("thread-select").focus(); throw new Error("请选择要继续的已有对话。"); }
       if (!model) { $("model-select").focus(); throw new Error("请选择执行任务使用的模型。"); }
       let runAt;
-      if (sendMode === "scheduled") {
+      if (!cycleMode && sendMode === "scheduled") {
         if (!$("run-at").value) { $("run-at").focus(); throw new Error("请选择发送时间。"); }
         runAt = zonedTimeToISO($("run-at").value, timeZone);
         if (new Date(runAt).getTime() <= Date.now()) { $("run-at").focus(); throw new Error("发送时间已过去，请选择未来的时间。"); }
@@ -952,11 +1124,11 @@
       if (!prompt) { $("prompt-input").focus(); throw new Error("请填写要发送的内容。"); }
       const project = state.projects.find((item) => item.path === projectPath);
       const thread = state.threads.find((item) => item.id === threadId);
-      payload = { projectPath, threadId, model, effort: $("effort-select").value || null, prompt, sendMode, ...(runAt ? { runAt } : {}), timeZone };
+      payload = { projectPath, threadId, model, effort: $("effort-select").value || null, prompt, ...(!cycleMode ? { sendMode, ...(runAt ? { runAt } : {}) } : {}), timeZone };
       if (!editingId) {
         payload.projectLabel = project?.label || project?.name || projectPath;
         payload.threadTitle = thread?.title || "未命名对话";
-        const fingerprint = JSON.stringify(payload);
+        const fingerprint = JSON.stringify({ kind: cycleMode ? "quota-cycle" : "task", payload: { ...payload, projectLabel: undefined, threadTitle: undefined } });
         if (state.pendingCreation?.fingerprint !== fingerprint) state.pendingCreation = { fingerprint, id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2) };
         payload.clientRequestId = state.pendingCreation.id;
       }
@@ -971,10 +1143,11 @@
     $("schedule-fields").disabled = true;
     setComposerMode();
     try {
-      const response = await api(editingId ? "/api/tasks/" + encodeURIComponent(editingId) : "/api/tasks", { method: editingId ? "PATCH" : "POST", body: JSON.stringify(payload) });
+      const response = await api(cycleMode ? "/api/quota-cycles" : editingId ? "/api/tasks/" + encodeURIComponent(editingId) : "/api/tasks", { method: editingId ? "PATCH" : "POST", body: JSON.stringify(payload) });
       state.pendingCreation = null;
-      const task = response.task || response;
-      if (task?.id) {
+      const task = cycleMode ? response.rule || response : response.task || response;
+      if (cycleMode) upsertCycle(task);
+      else if (task?.id) {
         const index = state.tasks.findIndex((item) => item.id === task.id);
         if (index >= 0) state.tasks[index] = task; else state.tasks.push(task);
       }
@@ -984,9 +1157,10 @@
       $("draft-note").hidden = true;
       $("prompt-input").value = ""; updatePromptCount();
       rememberPreferences();
-      $("quota-trigger").checked = false; updateSendMode();
-      toast(editingId ? "修改已保存" + (task.status === "paused" ? "，任务仍处于暂停状态" : "") : payload.sendMode === "quota_available" ? "任务已创建 · 额度可用时自动发送一次" : "任务已安排 · " + formatDate(payload.runAt, payload.timeZone) + " 发送");
+      $("quota-trigger").checked = false; $("cycle-trigger").checked = false; $("scheduled-trigger").checked = true; updateSendMode();
+      toast(cycleMode ? "额度循环已启用" : editingId ? "修改已保存" + (task.status === "paused" ? "，任务仍处于暂停状态" : "") : payload.sendMode === "quota_available" ? "额度任务已创建" : "任务已安排 · " + formatDate(payload.runAt, payload.timeZone) + " 发送");
       await poll(true);
+      if (cycleMode) { $("cycle-title").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); $("cycle-title").focus({ preventScroll: true }); }
     } catch (error) { $("form-error").textContent = readableError(error); $("form-error").hidden = false; }
     finally { state.submitting = false; $("schedule-fields").disabled = false; setComposerMode(); }
   }
@@ -1010,6 +1184,7 @@
       state.projects = data.projects || [];
       state.models = data.models || [];
       receiveTasks(data.tasks || []);
+      receiveCycles(data.quotaCycles || []);
       state.worker = data.worker;
       state.quota = data.quota;
       state.preferences = ui.pickPreferences(data.preferences && Object.keys(data.preferences).length ? data.preferences : readPreferences());
@@ -1030,6 +1205,7 @@
       $("tasks-empty").hidden = false;
       $("empty-title").textContent = "暂时无法读取任务";
       $("empty-description").textContent = "请检查连接后点击页面右上方的刷新。";
+      $("cycles-loading").textContent = "暂时无法读取额度循环，请检查连接后刷新。";
     } finally { state.bootstrapping = false; $("refresh-button").classList.remove("is-loading"); $("refresh-button").setAttribute("aria-busy", "false"); setComposerMode(); }
   }
   $("schedule-form").addEventListener("submit", submit);
@@ -1042,6 +1218,11 @@
   $("timezone-select").addEventListener("change", () => { state.timeZone = $("timezone-select").value; updateTimePreview(); rememberPreferences(); });
   $("run-at").addEventListener("change", () => { for (const button of document.querySelectorAll(".quick-times button")) button.setAttribute("aria-pressed", "false"); updateTimePreview(); });
   $("quota-trigger").addEventListener("change", updateSendMode);
+  $("scheduled-trigger").addEventListener("change", updateSendMode);
+  $("cycle-trigger").addEventListener("change", () => {
+    if ($("cycle-trigger").checked && !$("prompt-input").value.trim()) { $("prompt-input").value = "请只回复 OK，不调用工具或执行其他操作。"; updatePromptCount(); }
+    updateSendMode();
+  });
   $("prompt-input").addEventListener("input", updatePromptCount);
   document.querySelector(".quick-times").addEventListener("click", (event) => { const button = event.target.closest("button[data-minutes]"); if (button) setQuickTime(Number(button.dataset.minutes)); });
   $("cancel-edit").addEventListener("click", cancelEdit);

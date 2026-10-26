@@ -75,6 +75,83 @@ test('deduplicates concurrent create requests by clientRequestId', async t => {
   assert.equal(queue.list().length, 1);
 });
 
+test('a due task cannot begin dispatch before its creation write commits', { timeout: 3000 }, async t => {
+  const { queue, calls } = await harness(t);
+  const writeStore = queue._writeStore.bind(queue);
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const began = new Promise(resolve => { entered = resolve; });
+  let first = true;
+  queue._writeStore = async () => { if (first) { first = false; entered(); await gate; } return writeStore(); };
+  const creating = queue.create(input({ clientRequestId: 'durability-before-dispatch' }));
+  await began;
+  const pending = queue.list()[0];
+  await queue.tick();
+  assert.equal(calls.state.length, 0);
+  assert.equal(calls.execute.length, 0);
+  await assert.rejects(queue.delete(pending.id), error => error.code === 'task_busy');
+  release();
+  const saved = await creating;
+  await queue.tick();
+  assert.equal(calls.execute.length, 1);
+  assert.equal(calls.execute[0].id, saved.id);
+});
+
+test('failed creation rolls back before a concurrent snapshot and never leaves a dispatchable ghost', { timeout: 3000 }, async t => {
+  const { queue, storePath, calls } = await harness(t);
+  const writeStore = queue._writeStore.bind(queue);
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const began = new Promise(resolve => { entered = resolve; });
+  let failOnce = true;
+  queue._writeStore = async () => { if (failOnce) { failOnce = false; entered(); await gate; throw new Error('Isolated creation disk failure.'); } return writeStore(); };
+  const rejected = assert.rejects(queue.create(input({ clientRequestId: 'failed-cycle-child', threadId: 'failed-thread' })), /creation disk failure/);
+  await began;
+  const succeeded = queue.create(input({ clientRequestId: 'independent-create', threadId: 'other-thread' }));
+  await queue.tick();
+  release();
+  await rejected;
+  const saved = await succeeded;
+  assert.deepEqual(queue.list().map(task => task.id), [saved.id]);
+  assert.deepEqual(JSON.parse(await readFile(storePath, 'utf8')).tasks.map(task => task.id), [saved.id]);
+  await queue.tick();
+  assert.deepEqual(calls.execute.map(task => task.id), [saved.id]);
+});
+
+test('a resumed task remains undispatchable until its resumed state is durable', { timeout: 3000 }, async t => {
+  const { queue, calls } = await harness(t);
+  const task = await queue.create(input());
+  await queue.pause(task.id);
+  const writeStore = queue._writeStore.bind(queue);
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const began = new Promise(resolve => { entered = resolve; });
+  let first = true;
+  queue._writeStore = async () => { if (first) { first = false; entered(); await gate; } return writeStore(); };
+  const resuming = queue.resume(task.id);
+  await began;
+  await queue.tick();
+  assert.equal(calls.execute.length, 0);
+  release();
+  await resuming;
+  await queue.tick();
+  assert.equal(calls.execute.length, 1);
+});
+
+test('a failed resume durably restores pause instead of later sending an uncommitted change', async t => {
+  const { queue, storePath, calls } = await harness(t);
+  const task = await queue.create(input());
+  await queue.pause(task.id);
+  const writeStore = queue._writeStore.bind(queue);
+  let failOnce = true;
+  queue._writeStore = async () => { if (failOnce) { failOnce = false; throw new Error('Isolated resume write failure.'); } return writeStore(); };
+  await assert.rejects(queue.resume(task.id), /resume write failure/);
+  assert.equal(queue.get(task.id).status, 'paused');
+  assert.equal(JSON.parse(await readFile(storePath, 'utf8')).tasks[0].status, 'paused');
+  await queue.tick();
+  assert.equal(calls.execute.length, 0);
+});
+
 test('deleting pending and historical tasks removes content and results from the durable store', async t => {
   const { queue, calls, storePath } = await harness(t);
   for (const status of ['scheduled', 'waiting_quota', 'waiting_thread', 'paused', 'completed', 'failed', 'cancelled', 'needs_review']) {

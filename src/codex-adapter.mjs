@@ -10,7 +10,8 @@ const asIso = value => Number.isFinite(Number(value)) && Number(value) > 0 ? new
 const errorText = error => typeof error === 'string' ? error : error?.message || JSON.stringify(error || {});
 const isQuotaError = error => /usage.?limit|rate.?limit|quota|usageLimitExceeded/i.test(typeof error === 'string' ? error : JSON.stringify({ message: error?.message, data: error?.data, code: error?.code, codexErrorInfo: error?.codexErrorInfo, error }));
 export function normalizeQuota(response, model = null) {
-  const buckets = Object.values(response?.rateLimitsByLimitId || {});
+  const buckets = Object.entries(response?.rateLimitsByLimitId || {}).filter(([, bucket]) => bucket && typeof bucket === 'object')
+    .map(([key, bucket]) => ({ ...bucket, limitId: bucket.limitId || key }));
   if (!buckets.length && response?.rateLimits) buckets.push(response.rateLimits);
   // normalModelSlug describes a quota alias; it is not a supported model-to-bucket entitlement mapping.
   const relevant = buckets;
@@ -22,7 +23,7 @@ export function normalizeQuota(response, model = null) {
     allowed: relevant.length > 0 && !denied,
     resetAt: resetTimes.length ? asIso(Math.max(...resetTimes)) : null,
     reason: !relevant.length || response?.ordinaryUsageAllowed == null ? '暂时无法确认当前额度是否可用，任务会保留并稍后检查。' : denied ? '当前订阅额度不足，任务将等待额度恢复后执行。' : null,
-    windows: windows.map(w => ({ usedPercent: w.usedPercent, windowDurationMins: w.windowDurationMins, resetsAt: asIso(w.resetsAt), kind: w.kind })),
+    windows: windows.map(w => ({ usedPercent: w.usedPercent, windowDurationMins: w.windowDurationMins, resetsAt: asIso(w.resetsAt), kind: w.kind, limitId: w.limitId || null })),
   };
 }
 

@@ -65,6 +65,26 @@ test('quota waits for the latest exhausted applicable window, not an unexhausted
   assert.equal(result.resetAt, new Date(b.resetsAt * 1000).toISOString());
 });
 
+test('quota preserves exact window usage and bucket identity for cycle scheduling', () => {
+  const response = quota({ codex: { primary: window(0.4), secondary: { ...window(12), windowDurationMins: 10080 } } });
+  const result = normalizeQuota(response, model);
+  assert.equal(result.allowed, true);
+  assert.equal(result.resetAt, null, 'An available quota must not reuse an exhausted-window deadline.');
+  assert.equal(result.windows[0].usedPercent, 0.4, 'Do not round 99.6% remaining into a fully unused window.');
+  assert.equal(result.windows[0].limitId, 'codex', 'The keyed bucket identity survives even when omitted inside the value.');
+  assert.equal(result.windows[0].windowDurationMins, 300);
+  assert.equal(result.windows[1].windowDurationMins, 10080);
+  assert.equal(result.windows[1].kind, 'secondary');
+  assert.equal(result.windows[0].resetsAt, new Date(response.rateLimitsByLimitId.codex.primary.resetsAt * 1000).toISOString());
+});
+
+test('legacy single-bucket quota retains its identity and unknown reset stays unknown', () => {
+  const result = normalizeQuota({ ordinaryUsageAllowed: true, rateLimits: { limitId: 'codex', primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: null } } });
+  assert.equal(result.windows[0].limitId, 'codex');
+  assert.equal(result.windows[0].resetsAt, null);
+  assert.equal(result.windows[0].usedPercent, 0);
+});
+
 test('unknown ordinaryUsageAllowed cannot infer recovery from percentages', () => {
   for (const ordinaryUsageAllowed of [null, undefined]) {
     const result = normalizeQuota({ ...quota({ codex: { primary: window(0) } }), ordinaryUsageAllowed }, model);

@@ -36,7 +36,7 @@ async function ensureWorker() {
     try { health = await call(endpoint, '/api/health', { timeoutMs: 1000 }); }
     catch { /* Try starting; exclusive worker lock resolves racing launches. */ }
     if (health?.worker?.status === 'stopping') throw new Error('后台正在停止，当前任务结束后可重新打开插件。');
-    if (health?.worker?.version === '0.3.4') return endpoint;
+    if (health?.worker?.version === '0.4.0') return endpoint;
   }
   const paths = getPaths();
   await fs.mkdir(paths.dataDir, { recursive: true });
@@ -58,7 +58,7 @@ async function ensureWorker() {
     try {
       const health = await call(endpoint, '/api/health', { timeoutMs: Math.max(1, Math.min(1000, deadline - Date.now())) });
       if (health.worker?.status === 'stopping') throw new Error('后台正在停止。');
-      if (health.worker?.version === '0.3.4') return endpoint;
+      if (health.worker?.version === '0.4.0') return endpoint;
     } catch { /* Still starting. */ }
   }
   throw new Error('后台未能启动。请查看插件状态或重新打开插件。');

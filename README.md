@@ -1,12 +1,12 @@
 # Codex Scheduler
 
-Codex 桌面本地插件，当前版本 0.3.4。选择项目、已有对话、GPT 模型、思考强度和发送时间；到时通过 Codex 自带的桌面工具服务继续原对话。额度不足时保留任务，等待恢复后执行。
+Codex 桌面本地插件，当前版本 0.4.0。选择项目、已有对话、模型和发送条件，支持定时发送、等待额度和额度循环。
 
-下载安装包：[普通 Windows 电脑（x64）](https://github.com/sleepateleven11/codex-scheduler/releases/download/v0.3.4/codex-scheduler-0.3.4-windows-x64.zip) · [Windows ARM64 电脑](https://github.com/sleepateleven11/codex-scheduler/releases/download/v0.3.4/codex-scheduler-0.3.4-windows-arm64.zip) · [全部版本](https://github.com/sleepateleven11/codex-scheduler/releases/latest)。下载对应离线包，完整解压后运行“安装插件.cmd”。**无需预装 Node.js，无需管理员权限，也无需 npm install。**
+下载安装包：[普通 Windows 电脑（x64）](https://github.com/sleepateleven11/codex-scheduler/releases/download/v0.4.0/codex-scheduler-0.4.0-windows-x64.zip) · [Windows ARM64 电脑](https://github.com/sleepateleven11/codex-scheduler/releases/download/v0.4.0/codex-scheduler-0.4.0-windows-arm64.zip) · [全部版本](https://github.com/sleepateleven11/codex-scheduler/releases/latest)。完整解压后运行“安装插件.cmd”。**无需预装 Node.js，无需管理员权限，也无需 npm install。**
 
 ## 发给别人或换电脑安装
 
-分享对应架构的 `codex-scheduler-0.3.4-windows-x64.zip` 或 `codex-scheduler-0.3.4-windows-arm64.zip`。接收者使用自己的 Codex、ChatGPT 登录、项目和对话，不需要你的账号、API Key 或安装路径。分发版面向可运行 Codex 桌面的 64 位 Windows，运行时已自带；32 位 Windows 不受支持。
+分享对应架构的 `codex-scheduler-0.4.0-windows-x64.zip` 或 `codex-scheduler-0.4.0-windows-arm64.zip`。接收者使用自己的 Codex、ChatGPT 登录、项目和对话，不需要你的账号、API Key 或安装路径。分发版面向可运行 Codex 桌面的 64 位 Windows，运行时已自带；32 位 Windows 不受支持。
 
 1. 在新电脑安装并启动 Codex 桌面，登录自己的 ChatGPT 账号，添加本地项目并建立一个使用 OpenAI 服务商的对话。
 2. 把对应架构的 ZIP **全部解压缩**后，双击文件夹里的 **“安装插件.cmd”**。安装入口自动校验并配置私有运行时，不要求系统 PATH 中有 Node，不替换已有 Node，也不请求管理员提权。若缺少 Codex，先安装并启动自己的 Codex 桌面后重试。
@@ -14,6 +14,17 @@ Codex 桌面本地插件，当前版本 0.3.4。选择项目、已有对话、GP
 4. 在管理器展开 **“首次设置与连接自检”**，点击 **“重新检测”**。检查包含运行环境、Codex、登录、服务商、桌面发送连接、本机项目和 GPT 模型；全部通过后再选择自己的项目、已有对话并创建任务。自检只读状态，不发送测试消息。
 
 安装器把完整程序复制到当前用户的稳定安装目录，并按这台电脑重新生成启动配置；安装成功后可移动或删除原解压目录。分发包不包含个人任务、聊天记录、账号凭据或桌面连接信息。更新和重装保留本机队列；**将 ZIP 发给其他人不会迁移你的任务或登录状态**。换电脑后的旧任务涉及原电脑的项目路径和对话 ID，需要在新电脑重新选择目标并安排。
+
+## 0.4.0 额度循环
+
+选择项目、对话、模型和消息，勾选 **“每轮额度刷新后自动发送”**，点击 **“启用额度循环”**。
+
+- 当前 5 小时额度满额时发送一次；未满则等下次刷新，之后每轮一次。
+- 按账号返回的刷新时间检测，支持暂停、继续和删除。重启保留本轮状态，不补发错过的轮次。
+- 需要账号提供明确的 5 小时额度窗口；只返回周额度时等待。周额度不足、对话忙或结果待核对时也会等待或停止。
+- 单条消息用量由模型决定，不能保证恰好 1% 或改变平台计时。默认短消息为“请只回复 OK，不调用工具或执行其他操作”。
+
+运行时保持 Codex 开启、电脑唤醒。升级保留本地循环，分发包不携带个人配置。详细边界见[验证记录](docs/quota-cycle-validation.md)。
 
 ## GPT 与服务商校验
 
@@ -63,7 +74,7 @@ Codex 桌面本地插件，当前版本 0.3.4。选择项目、已有对话、GP
 
 Windows 离线包按 x64、ARM64 分开提供，内置 Node.js 24.22.1 及其原始许可。入口优先使用已校验的自带运行时或私有缓存，避免无 Node、旧 Node、PATH 未刷新等环境阻断安装；安装后删除解压目录仍可继续使用。运行时采用官方固定版本、HTTPS 地址与 SHA-256 校验，损坏文件不会执行。
 
-不带运行时的 `codex-scheduler-0.3.4.zip` 是轻量源码分发包：首次运行入口时可能需要联网从 Node.js 官方站点下载并校验运行时。网络受限或准备发给普通用户时，优先使用上述 Windows 离线包。GitHub 的“Source code”自动源码归档也不包含二进制。
+不带运行时的 `codex-scheduler-0.4.0.zip` 是轻量源码分发包：首次运行入口时可能需要联网从 Node.js 官方站点下载并校验运行时。网络受限或准备发给普通用户时，优先使用上述 Windows 离线包。GitHub 的“Source code”自动源码归档也不包含二进制。
 
 安装使用当前 Windows 用户，不复制他人的 Codex 账号、项目、对话、任务或发送连接。安装可在未登录状态完成；实际发送前仍须登录自己的 ChatGPT 并按首次自检完成配置。当前仅支持 Windows；组织策略禁用本地脚本或计划任务时会明确报错，不修改系统策略。
 

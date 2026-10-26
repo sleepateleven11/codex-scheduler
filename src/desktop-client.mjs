@@ -166,7 +166,7 @@ class StdioConnection {
     proc.once('exit', () => disconnected(new Error('Official desktop MCP exited.')));
     proc.stdin.on('error', disconnected);
     try {
-      await this.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'codex-scheduler', version: '0.3.4' } }, timeoutMs);
+      await this.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'codex-scheduler', version: '0.4.0' } }, timeoutMs);
       this.write({ jsonrpc: '2.0', method: 'notifications/initialized' });
       const result = await this.request('tools/list', {}, timeoutMs);
       this.tools = new Set((result?.tools || []).map(tool => tool.name));

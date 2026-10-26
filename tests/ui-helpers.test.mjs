@@ -113,13 +113,75 @@ test('quota-trigger mode respects conversation waiting and does not imply resend
 });
 test('quota trigger guidance makes saving and immediate availability explicit', () => {
   const hint = ui.quotaTriggerHint();
-  assert.ok(hint.includes('保存后每 30 秒检测'));
-  assert.ok(hint.includes('当前额度可用时立即发送'));
-  assert.ok(hint.includes('无需设置时间'));
-  assert.ok(hint.includes('仍需创建任务'));
+  assert.ok(hint.includes('创建后自动检测额度'));
+  assert.ok(hint.includes('可用时发送一次'));
 });
 test('quota mode is never retained as a new-task preference', () => {
   assert.deepEqual(ui.pickPreferences({ sendMode: 'quota_available', quotaTrigger: true, model: 'model', threadId: 'thread' }), { model: 'model', threadId: 'thread' });
+});
+
+test('quota cycles distinguish pause, pending completion and uncertain delivery without promising another send', () => {
+  assert.deepEqual(ui.cycleStatus({ enabled: false, status: 'paused' }), { label: '已暂停', tone: 'paused' });
+  assert.equal(ui.cycleStatus({ enabled: true, status: 'queued', lastTaskStatus: 'running' }).label, '本轮执行中');
+  assert.equal(ui.cycleStatus({ enabled: true, status: 'queued', lastTaskStatus: 'waiting_thread' }).label, '本轮已排队');
+  assert.equal(ui.cycleStatus({ enabled: false, status: 'needs_review' }).label, '需要核对');
+  assert.equal(ui.cycleStatus({ enabled: false, status: 'error' }).label, '需要处理');
+  assert.equal(ui.cycleStatus({ enabled: true, status: 'waiting_reset' }).label, '等待下轮刷新');
+  assert.equal(ui.cycleStatus({ enabled: true, status: 'running' }).label, '本轮执行中');
+  assert.equal(ui.cycleStatus({ enabled: true, status: 'waiting_thread' }).label, '等待对话空闲');
+  assert.equal(ui.cycleStatus({ enabled: true, status: 'awaiting_window_binding' }).label, '等待刷新时间');
+  assert.equal(ui.cycleStatus({ enabled: true, status: 'unrecognized' }).label, '状态待确认');
+  assert.match(ui.cycleCountdown({ enabled: false, status: 'needs_review' }), /不会自动重复发送/);
+  assert.match(ui.cycleCountdown({ enabled: false, status: 'paused' }), /已暂停/);
+  assert.match(ui.cycleCountdown({ enabled: true, status: 'awaiting_window_binding' }), /本轮已安排.*等待刷新时间/);
+  assert.match(ui.cycleCountdown({ enabled: true, status: 'waiting_thread' }), /等待前序任务或对话空闲/);
+});
+
+test('quota cycle countdown uses the real next check and never invents a fixed five-hour send time', () => {
+  const now = Date.parse('2026-10-26T02:00:00Z');
+  const rule = { enabled: true, status: 'waiting_reset', nextCheckAt: new Date(now + 30000).toISOString(), nextResetAt: new Date(now + 3600000).toISOString() };
+  assert.equal(ui.cycleCountdown(rule, now), '距离下次检测 30 秒');
+  assert.equal(ui.cycleCountdown(rule, now + 30000), '正在重新检测额度窗口');
+  delete rule.nextCheckAt;
+  assert.equal(ui.cycleCountdown(rule, now), '等待读取真实额度窗口');
+  assert.equal(ui.cycleCountdown({ enabled: true, status: 'queued', lastTaskStatus: 'running' }, now), '正在等待本轮消息执行完成');
+});
+
+test('quota cycle counts only confirmed completed rounds and does not infer success from a queued message', () => {
+  assert.equal(ui.cycleCompletedCount({ completedCycles: 3 }), 3);
+  for (const value of [undefined, null, '3', -1, 1.5, NaN, Infinity]) assert.equal(ui.cycleCompletedCount({ completedCycles: value, lastTaskStatus: 'running' }), 0);
+});
+
+test('quota cycle guidance requires explicit enabling and describes one message per real window', () => {
+  assert.match(ui.cycleTriggerHint(), /当前满额/);
+  assert.match(ui.cycleTriggerHint(), /等待下次刷新/);
+  assert.match(ui.cycleTriggerHint(), /之后每轮一次/);
+  assert.match(ui.cycleDeleteConfirmation(), /停止后续发送/);
+  assert.match(ui.cycleDeleteConfirmation(), /保留已发消息和对话/);
+  assert.match(ui.cycleDeleteConfirmation(), /正在执行的任务会继续/);
+  assert.deepEqual(ui.pickPreferences({ cycleMode: true, enabled: true, model: 'gpt-fixture', prompt: 'private' }), { model: 'gpt-fixture' });
+});
+
+test('quota display distinguishes exact full capacity from rounded fractional usage', () => {
+  assert.equal(ui.quotaRemainingText(0), '100%');
+  assert.equal(ui.quotaRemainingText(0.4), '99.6%');
+  assert.equal(ui.quotaRemainingText(0.0001), '接近100%');
+  assert.equal(ui.quotaRemainingText(25), '75%');
+  assert.equal(ui.quotaRemainingText(99.999), '少于0.1%');
+  assert.equal(ui.quotaRemainingText(100), '0%');
+  for (const value of [undefined, null, '0', -1, 101, NaN, Infinity]) assert.equal(ui.quotaRemainingText(value), '');
+});
+
+test('five-hour and weekly quota summaries remain distinct even when the week has lower capacity', () => {
+  const windows = [{ limitId: 'codex', usedPercent: 0, windowDurationMins: 300 }, { limitId: 'codex', usedPercent: 8, windowDurationMins: 10080 }];
+  assert.equal(ui.quotaWindowSummary(windows), '5 小时剩余 100% · 周额度剩余 92%');
+  assert.equal(ui.quotaWindowSummary([{ usedPercent: 0.4, windowDurationMins: 300 }]), '5 小时剩余 99.6%');
+  assert.equal(ui.quotaWindowSummary([{ usedPercent: 0.0001, windowDurationMins: 300 }]), '5 小时剩余 接近100%');
+});
+
+test('multiple quota buckets, malformed windows and unrecognized durations keep the conservative summary', () => {
+  const five = { limitId: 'codex', usedPercent: 0, windowDurationMins: 300 };
+  for (const windows of [null, [], [{ ...five, usedPercent: null }], [{ ...five, windowDurationMins: 60 }], [five, { ...five }], [five, { limitId: 'other', usedPercent: 5, windowDurationMins: 10080 }], [{ limitId: 'codex', usedPercent: 5, windowDurationMins: 10080 }]]) assert.equal(ui.quotaWindowSummary(windows), '');
 });
 test('preferences contain only user choices and never prompt or access credentials', () => {
   assert.deepEqual(ui.pickPreferences({ projectPath: 'C:\\work', threadId: 'thread', model: 'model', effort: 'high', timeZone: 'UTC', prompt: 'private', token: 'secret', unknown: 'ignored' }), { projectPath: 'C:\\work', threadId: 'thread', model: 'model', effort: 'high', timeZone: 'UTC' });
@@ -235,4 +297,11 @@ test('a complete provider repair instruction from the backend is displayed once'
   const message = '这个对话绑定了其他服务商。请先在 Codex 原对话切换到 OpenAI 订阅通道，再刷新；也可以选择已有的 OpenAI 对话。仅选择 GPT 模型不会切换服务商。';
   const status = ui.threadProviderStatus({ modelProvider: 'deepseek', providerCompatible: false, providerIssue: message });
   assert.equal(status.issue, message);
+});
+
+test('cycle setup explains a weekly-only or ambiguous quota instead of promising immediate sends', () => {
+  assert.match(ui.cycleTriggerHint({ windows: [{ windowDurationMins: 10080, usedPercent: 19 }] }), /未检测到 5 小时额度窗口.*暂不发送/);
+  assert.match(ui.cycleTriggerHint({ windows: [] }), /暂不发送/);
+  assert.match(ui.cycleTriggerHint({ windows: [{ windowDurationMins: 300 }, { windowDurationMins: 300 }] }), /暂不发送/);
+  assert.doesNotMatch(ui.cycleTriggerHint({ windows: [{ windowDurationMins: 300, usedPercent: 0 }, { windowDurationMins: 10080, usedPercent: 19 }] }), /暂不发送/);
 });

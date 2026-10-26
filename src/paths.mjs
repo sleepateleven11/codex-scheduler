@@ -18,5 +18,5 @@ export function getPaths() {
     }
   }
   const dataDir = path.resolve(process.env.SCHEDULER_DATA_DIR || savedDataDir || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), '.local', 'share'), 'CodexScheduler'));
-  return { root, dataDir, endpointPath: path.join(dataDir, 'endpoint.json'), storePath: path.join(dataDir, 'queue.json'), logPath: path.join(dataDir, 'worker.log'), lockPath: path.join(dataDir, 'worker.lock'), configPath: path.join(dataDir, 'settings.json'), codexHome, installationPath };
+  return { root, dataDir, endpointPath: path.join(dataDir, 'endpoint.json'), storePath: path.join(dataDir, 'queue.json'), quotaCyclesPath: path.join(dataDir, 'quota-cycles.json'), logPath: path.join(dataDir, 'worker.log'), lockPath: path.join(dataDir, 'worker.lock'), configPath: path.join(dataDir, 'settings.json'), codexHome, installationPath };
 }

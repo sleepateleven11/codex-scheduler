@@ -59,7 +59,7 @@ export async function distributionPayload(sourceRoot = ROOT, { arch } = {}) {
       for (const name of (await fs.readdir(full)).sort()) await collect(path.join(relative, name));
     } else if (stat.isFile()) {
       const name = relative.replaceAll('\\', '/');
-      if (/(?:^|\/)(?:auth\.json|queue\.json|settings\.json|endpoint\.json|desktop-connection\.json|worker\.(?:log|lock)|\.env(?:\..*)?)$/i.test(name)) throw new Error(`分发目录中存在本机运行数据：${name}`);
+      if (/(?:^|\/)(?:auth\.json|queue\.json|quota-cycles\.json|settings\.json|endpoint\.json|desktop-connection\.json|worker\.(?:log|lock)|\.env(?:\..*)?)$/i.test(name)) throw new Error(`分发目录中存在本机运行数据：${name}`);
       files.push({ name, bytes: name === '.mcp.json' ? Buffer.from(JSON.stringify(portableMcpManifest(), null, 2) + '\n') : await fs.readFile(full) });
     } else throw new Error(`分发目录中存在不支持的文件：${relative}`);
   }

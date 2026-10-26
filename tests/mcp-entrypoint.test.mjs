@@ -38,7 +38,7 @@ test('real MCP initialize registers genuine host context without a tools/call or
   const dir = await directory(t);
   const request = await mcp(t, dir, { CODEX_THREAD_ID: SOURCE, CODEX_APP_TOOLS_PIPE_PATH: PIPE });
   const initialized = await request('initialize', { protocolVersion: '2024-11-05', capabilities: {} });
-  assert.equal(initialized.result.serverInfo.version, '0.3.4');
+  assert.equal(initialized.result.serverInfo.version, '0.4.0');
   assert.ok(initialized.result.capabilities.resources);
   const descriptor = JSON.parse(await fs.readFile(path.join(dir, 'desktop-connection.json'), 'utf8'));
   assert.equal(descriptor.sourceThreadId, SOURCE); assert.equal(descriptor.pipePath, PIPE);
@@ -69,7 +69,7 @@ test('MCP advertises and forwards an explicitly authorized quota trigger without
   const submissions = [];
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.3.4', status: 'running' } }));
+    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.4.0', status: 'running' } }));
     assert.equal(req.url, '/api/tasks');
     assert.equal(req.method, 'POST');
     const chunks = [];
@@ -85,15 +85,46 @@ test('MCP advertises and forwards an explicitly authorized quota trigger without
   const request = await mcp(t, dir);
   await request('initialize', { protocolVersion: '2024-11-05' });
   const tool = (await request('tools/list')).result.tools.find(tool => tool.name === 'scheduler_create');
-  assert.deepEqual(tool.inputSchema.properties.sendMode.enum, ['scheduled', 'quota_available']);
+  assert.deepEqual(tool.inputSchema.properties.sendMode.enum, ['scheduled', 'quota_available', 'quota_cycle']);
   assert.ok(!tool.inputSchema.required.includes('runAt'));
   assert.deepEqual(tool.inputSchema.anyOf[0].required, ['runAt']);
-  assert.deepEqual(tool.inputSchema.anyOf[1].properties.sendMode, { const: 'quota_available' });
+  assert.deepEqual(tool.inputSchema.anyOf[1].properties.sendMode, { enum: ['quota_available', 'quota_cycle'] });
   const args = { projectPath: 'C:\\fixture', threadId: SOURCE, model: 'fixture-model', prompt: 'Fixture only', sendMode: 'quota_available' };
   const response = await request('tools/call', { name: 'scheduler_create', arguments: args });
   assert.ok(!response.result.isError);
   assert.deepEqual(submissions, [args]);
   assert.equal(JSON.parse(response.result.content[0].text).task.sendMode, 'quota_available');
+});
+
+test('MCP routes explicit recurring consent and cycle controls through the independent rule API', async t => {
+  const dir = await directory(t);
+  const calls = [];
+  const id = '55555555-5555-4555-8555-555555555555';
+  const server = http.createServer(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.4.0', status: 'running' } }));
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const text = Buffer.concat(chunks).toString();
+    calls.push({ method: req.method, url: req.url, body: text ? JSON.parse(text) : null });
+    res.end(JSON.stringify(req.method === 'DELETE' ? { deleted: true, id } : { rule: { id, enabled: true } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await fs.writeFile(path.join(dir, 'endpoint.json'), JSON.stringify({ port: server.address().port, token: 'c'.repeat(64) }));
+  const request = await mcp(t, dir);
+  await request('initialize', { protocolVersion: '2024-11-05' });
+  const args = { projectPath: 'C:\\fixture', threadId: SOURCE, model: 'fixture-model', prompt: 'Only reply OK.', sendMode: 'quota_cycle', clientRequestId: 'fixture-cycle-request' };
+  assert.ok(!(await request('tools/call', { name: 'scheduler_create', arguments: args })).result.isError);
+  const { sendMode, ...expected } = args;
+  assert.deepEqual(calls.shift(), { method: 'POST', url: '/api/quota-cycles', body: expected });
+  for (const action of ['pause', 'resume', 'delete']) {
+    const result = await request('tools/call', { name: 'scheduler_action', arguments: { id, action, targetType: 'quota_cycle' } });
+    assert.ok(!result.result.isError);
+    assert.deepEqual(calls.shift(), { method: action === 'delete' ? 'DELETE' : 'POST', url: '/api/quota-cycles/' + id + (action === 'delete' ? '' : '/action'), body: action === 'delete' ? null : { action } });
+  }
+  assert.equal((await request('tools/call', { name: 'scheduler_action', arguments: { id, action: 'retry', targetType: 'quota_cycle' } })).result.isError, true);
+  assert.deepEqual(calls, [], 'Uncertain cycles cannot silently route to task retry.');
 });
 
 test('MCP advertises destructive local deletion and forwards it using the DELETE API', async t => {
@@ -102,7 +133,7 @@ test('MCP advertises destructive local deletion and forwards it using the DELETE
   const id = '44444444-4444-4444-8444-444444444444';
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.3.4', status: 'running' } }));
+    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.4.0', status: 'running' } }));
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     calls.push({ method: req.method, url: req.url, body: Buffer.concat(chunks).toString() });

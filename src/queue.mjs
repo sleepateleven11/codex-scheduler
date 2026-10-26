@@ -96,6 +96,7 @@ export class QueueManager {
     this.maxConcurrent = Math.max(1, Math.floor(Number(maxConcurrent) || 1));
     this.tasks = [];
     this.deletedRequestHashes = new Set();
+    this._uncommitted = new Set();
     this._deleting = new Map();
     this._deletions = new Map();
     this._deleteStorageFaults = new Set();
@@ -113,7 +114,7 @@ export class QueueManager {
   _assertInitialized() { if (!this.initialized) throw new Error('Call initialize() before using the queue.'); }
   _find(id) { const task = this.tasks.find(item => item.id === id); if (!task) throw new Error('Task not found.'); return task; }
   _assertMutable(task) {
-    if (task.status === 'running' || this._processing.has(task.id) || this._active.has(task.id) || this._deleting.has(task.id)) throw new Error('This task is running or being dispatched; its submitted turn cannot be changed or cancelled.');
+    if (task.status === 'running' || this._uncommitted.has(task.id) || this._processing.has(task.id) || this._active.has(task.id) || this._deleting.has(task.id)) throw new Error('This task is running or being dispatched; its submitted turn cannot be changed or cancelled.');
   }
 
   async initialize() {
@@ -225,8 +226,16 @@ export class QueueManager {
       attempts: 0, nextAttemptAt: fields.runAt, lastError: null, result: null,
       turnId: null, submissionReceipt: null, lastRejectedSubmission: null, dispatchState: null, dispatchStartedAt: null, quotaRechecks: 0, quotaResetAt: null,
     };
+    this._uncommitted.add(task.id);
     this.tasks.push(task);
-    await this._persist();
+    try {
+      await this._persist({ prepare: () => () => {
+        // Creation is not dispatchable until its durable write succeeds. A
+        // failed snapshot must not be carried into a later concurrent write.
+        const index = this.tasks.indexOf(task);
+        if (index >= 0) this.tasks.splice(index, 1);
+      } });
+    } finally { this._uncommitted.delete(task.id); }
     return copy(task);
   }
 
@@ -262,10 +271,13 @@ export class QueueManager {
     const task = this._find(id);
     this._assertMutable(task);
     if (task.status !== 'paused') throw new Error('Only paused tasks can be resumed.');
+    const previous = copy(task);
+    this._uncommitted.add(task.id);
     task.status = 'scheduled';
     task.nextAttemptAt = new Date(Math.max(Date.parse(task.runAt), this.clock())).toISOString();
     task.updatedAt = this._now();
-    await this._persist();
+    try { await this._persist({ prepare: () => () => Object.assign(task, previous) }); }
+    finally { this._uncommitted.delete(task.id); }
     return copy(task);
   }
 
@@ -287,7 +299,7 @@ export class QueueManager {
     if (this._deletions.has(id)) return this._deletions.get(id);
     const task = this.tasks.find(item => item.id === id);
     if (!task) return { deleted: true, id };
-    if (task && (task.status === 'running' || this._processing.has(id) || this._active.has(id)
+    if (task && (task.status === 'running' || this._uncommitted.has(id) || this._processing.has(id) || this._active.has(id)
       || ([...PENDING, 'paused'].includes(task.status) && (task.submissionReceipt || task.turnId || ['intent', 'submitted'].includes(task.dispatchState))))) {
       throw queueError('任务正在运行、派发或尚有未确认的提交，暂时无法删除。请先核对目标对话，等待处理结束或取消排队后再试。', 'task_busy', 409);
     }
@@ -394,7 +406,7 @@ export class QueueManager {
     for (const task of ordered) if (BLOCKING.has(task.status) && !firstByThread.has(task.threadId)) firstByThread.set(task.threadId, task.id);
     const candidates = [];
     for (const task of ordered) {
-      if (!PENDING.has(task.status) || firstByThread.get(task.threadId) !== task.id || runningThreads.has(task.threadId)) continue;
+      if (!PENDING.has(task.status) || this._uncommitted.has(task.id) || firstByThread.get(task.threadId) !== task.id || runningThreads.has(task.threadId)) continue;
       if (Date.parse(task.runAt) > this.clock() || Date.parse(task.nextAttemptAt ?? task.runAt) > this.clock()) continue;
       candidates.push(task);
     }
@@ -404,7 +416,7 @@ export class QueueManager {
       while (!this._stopping && !this._deleteStorageFaults.size && cursor < candidates.length) {
         const task = candidates[cursor++];
         // Mutations may happen while another candidate is being processed.
-        if (!this.tasks.includes(task) || !PENDING.has(task.status) || this._processing.has(task.id) || [...this._deleting.values()].some(item => item.threadId === task.threadId)) continue;
+        if (!this.tasks.includes(task) || !PENDING.has(task.status) || this._uncommitted.has(task.id) || this._processing.has(task.id) || [...this._deleting.values()].some(item => item.threadId === task.threadId)) continue;
         if (Date.parse(task.runAt) > this.clock() || Date.parse(task.nextAttemptAt ?? task.runAt) > this.clock()) continue;
         const currentHead = this.tasks.filter(item => item.threadId === task.threadId && BLOCKING.has(item.status))
           .sort((a, b) => Date.parse(a.runAt) - Date.parse(b.runAt))[0];

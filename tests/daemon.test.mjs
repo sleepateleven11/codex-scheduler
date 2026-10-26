@@ -158,6 +158,25 @@ await finish();
 `);
 });
 
+test('quota cycle APIs are isolated, authenticated, and do not enable a rule on discovery', { timeout: 8000 }, async t => {
+  await runScenario(t, `
+const endpoint = await ensureDaemon();
+const origin = 'http://127.0.0.1:' + endpoint.port;
+const headers = { Authorization: 'Bearer ' + endpoint.token, 'Content-Type': 'application/json' };
+assert.equal((await fetch(origin + '/api/quota-cycles')).status, 401);
+assert.deepEqual(await (await fetch(origin + '/api/quota-cycles', { headers })).json(), { rules: [] });
+const data = JSON.parse(await fs.readFile(path.join(dataDir, 'quota-cycles.json'), 'utf8'));
+assert.equal(data.version, 1); assert.deepEqual(data.rules, []);
+const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+assert.equal((await fetch(origin + '/api/quota-cycles/' + id, { method: 'DELETE', headers: { ...headers, Origin: 'https://example.com' } })).status, 403);
+assert.equal((await fetch(origin + '/api/quota-cycles/' + id + '/action', { method: 'POST', headers, body: JSON.stringify({ action: 'retry' }) })).status, 400);
+assert.equal((await fetch(origin + '/api/quota-cycles/' + id, { method: 'DELETE', headers })).status, 200);
+assert.deepEqual(await (await fetch(origin + '/api/quota-cycles', { headers })).json(), { rules: [] });
+assert.deepEqual(JSON.parse(await fs.readFile(path.join(dataDir, 'queue.json'), 'utf8')).tasks, []);
+await finish();
+`);
+});
+
 test('task deletion API is authenticated, durable, idempotent, and protects uncertain dispatches', { timeout: 8000 }, async t => {
   await runScenario(t, `
 const now = new Date().toISOString();

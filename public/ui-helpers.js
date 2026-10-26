@@ -45,8 +45,60 @@
     return [days ? days + " 天" : "", days || hours ? hours + " 小时" : "", days || hours || minutes ? minutes + " 分" : "", seconds + " 秒"].filter(Boolean).join(" ");
   }
   function taskSendMode(task = {}) { return task.sendMode === "quota_available" ? "quota_available" : "scheduled"; }
-  function quotaTriggerHint() { return "保存后每 30 秒检测；当前额度可用时立即发送，无需设置时间。勾选后仍需创建任务。"; }
+  function quotaTriggerHint() { return "创建后自动检测额度，可用时发送一次。"; }
+  function quotaRemainingText(usedPercent) {
+    if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) return "";
+    if (usedPercent === 0) return "100%";
+    if (usedPercent === 100) return "0%";
+    const rounded = Math.round((100 - usedPercent) * 10) / 10;
+    if (rounded >= 100) return "接近100%";
+    if (rounded <= 0) return "少于0.1%";
+    return rounded + "%";
+  }
+  function quotaWindowSummary(windows) {
+    if (!Array.isArray(windows) || !windows.length) return "";
+    if (windows.some((window) => !window || !quotaRemainingText(window.usedPercent) || ![300, 10080].includes(window.windowDurationMins))) return "";
+    const buckets = new Set(windows.map((window) => typeof window.limitId === "string" && window.limitId ? window.limitId : "legacy"));
+    if (buckets.size !== 1) return "";
+    const five = windows.filter((window) => window.windowDurationMins === 300);
+    const week = windows.filter((window) => window.windowDurationMins === 10080);
+    if (five.length !== 1 || week.length > 1) return "";
+    return ["5 小时剩余 " + quotaRemainingText(five[0].usedPercent), week.length ? "周额度剩余 " + quotaRemainingText(week[0].usedPercent) : ""].filter(Boolean).join(" · ");
+  }
   function taskTriggerText(task) { return taskSendMode(task) === "quota_available" ? "额度可用时立即发送" : "定时发送"; }
+  function cycleStatus(rule = {}) {
+    if (rule.status === "needs_review") return { label: "需要核对", tone: "needs_review" };
+    if (rule.status === "error") return { label: "需要处理", tone: "error" };
+    if (rule.enabled === false || rule.status === "paused") return { label: "已暂停", tone: "paused" };
+    if (rule.status === "running") return { label: "本轮执行中", tone: "running" };
+    if (rule.status === "waiting_thread") return { label: "等待对话空闲", tone: "waiting_quota" };
+    if (rule.status === "awaiting_window_binding") return { label: "等待刷新时间", tone: "waiting_reset" };
+    if (rule.status === "queued") return { label: rule.lastTaskStatus === "running" ? "本轮执行中" : "本轮已排队", tone: "running" };
+    if (rule.status === "waiting_reset") return { label: "等待下轮刷新", tone: "waiting_reset" };
+    if (rule.status === "waiting_quota") return { label: "检测额度", tone: "waiting_quota" };
+    return { label: "状态待确认", tone: "paused" };
+  }
+  function cycleCountdown(rule = {}, now = Date.now()) {
+    if (rule.status === "needs_review") return "本轮发送结果需要核对，系统不会自动重复发送。";
+    if (rule.status === "error") return "请处理最近提示后再恢复循环。";
+    if (rule.enabled === false || rule.status === "paused") return "循环已暂停。";
+    if (rule.status === "running") return "正在等待本轮消息执行完成";
+    if (rule.status === "awaiting_window_binding") return "本轮已安排，等待刷新时间。";
+    if (rule.status === "waiting_thread") return "等待前序任务或对话空闲。";
+    if (rule.status === "queued") return rule.lastTaskStatus === "running" ? "正在等待本轮消息执行完成" : "本轮消息已加入任务队列";
+    const left = secondsLeft(rule.nextCheckAt, now);
+    return left === null ? "等待读取真实额度窗口" : left === 0 ? "正在重新检测额度窗口" : "距离下次检测 " + remainingTime(rule.nextCheckAt, now);
+  }
+  function cycleCompletedCount(rule = {}) {
+    return Number.isSafeInteger(rule.completedCycles) && rule.completedCycles >= 0 ? rule.completedCycles : 0;
+  }
+  function cycleTriggerHint(quota) {
+    const waiting = Array.isArray(quota?.windows) && quota.windows.filter((window) => window?.windowDurationMins === 300).length !== 1;
+    return waiting ? "未检测到 5 小时额度窗口，暂不发送。" : "当前满额即发送，否则等待下次刷新；之后每轮一次。";
+  }
+  function cycleDeleteConfirmation() {
+    return "停止后续发送，保留已发消息和对话。正在执行的任务会继续。";
+  }
   function taskCountdown(task, now = Date.now()) {
     if (task.status === "scheduled") {
       if (taskSendMode(task) === "quota_available") return "等待检测额度，额度可用时发送";
@@ -150,5 +202,5 @@
     if (thread && threadProviderStatus(thread).compatible === false) return threadProviderStatus(thread).issue;
     return diagnosticsBlockReason(diagnostics);
   }
-  globalThis.SchedulerUI = Object.freeze({ canEditTask, canDeleteTask, taskDeleteBlockReason, taskDeleteConfirmation, secondsLeft, remainingTime, taskSendMode, quotaTriggerHint, taskTriggerText, taskCountdown, pickPreferences, taskNotice, threadTime, shortThreadIds, threadOptions, matchingThreads, threadProviderStatus, diagnosticsBlockReason, submissionBlockReason });
+  globalThis.SchedulerUI = Object.freeze({ canEditTask, canDeleteTask, taskDeleteBlockReason, taskDeleteConfirmation, secondsLeft, remainingTime, taskSendMode, quotaTriggerHint, quotaRemainingText, quotaWindowSummary, taskTriggerText, taskCountdown, cycleStatus, cycleCountdown, cycleCompletedCount, cycleTriggerHint, cycleDeleteConfirmation, pickPreferences, taskNotice, threadTime, shortThreadIds, threadOptions, matchingThreads, threadProviderStatus, diagnosticsBlockReason, submissionBlockReason });
 })();

@@ -17,6 +17,7 @@ verification/
 !.env.example
 auth.json
 queue.json
+quota-cycles.json
 settings.json
 endpoint.json
 desktop-connection.json
