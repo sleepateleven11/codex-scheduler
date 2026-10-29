@@ -108,11 +108,13 @@ h1 { margin: 0; color: var(--muted); font-size: 27px; font-weight: 700; line-hei
 .service-item > div, .service-copy { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
 .service-dot { width: 7px; height: 7px; box-shadow: 0 0 0 3px #a2a9b80c; }
 .service-dot.online { box-shadow: 0 0 0 3px #55a5880c; }
+.service-dot.connecting { background: var(--purple); }
 .service-name { color: var(--muted); font-size: 12px; }
 .service-item strong { color: var(--text); font-size: 12px; font-weight: 600; }
 .service-copy small { color: var(--muted); font-size: 11px; }
 .service-bar .button { min-height: 32px; padding: 5px 10px; font-size: 12px; }
-.service-bar p { margin: 0 0 0 auto; color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 330px; }
+.connection-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
+.service-bar p { flex: 1 1 100%; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; max-width: none; overflow-wrap: anywhere; }
 .setup-panel { margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; overflow: clip; }
 .setup-panel > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 16px; cursor: pointer; list-style: none; transition: background .15s; }
 .setup-panel > summary:hover { background: #fafbfe; }
@@ -432,7 +434,7 @@ fieldset:disabled { opacity: .6; }
   .overview-card { padding: 17px 16px; }
   .metric-decoration { display: none; }
   .service-bar { column-gap: 20px; }
-  .service-bar p { max-width: 290px; }
+  .service-bar p { max-width: none; }
   .panel-header { padding: 20px 20px 18px; }
   .composer-panel form { padding: 0 20px 20px; }
   .draft-note { margin-left: 20px; margin-right: 20px; }
@@ -455,7 +457,7 @@ fieldset:disabled { opacity: .6; }
   .queue-panel { position: static; min-height: 420px; max-height: none; }
   .task-list { max-height: min(720px, 75dvh); flex: initial; }
   .empty-state, .loading-state { min-height: 280px; }
-  .service-bar p { flex: 1 1 100%; max-width: none; margin-left: 15px; }
+  .service-bar p { flex: 1 1 100%; max-width: none; margin-left: 0; }
   .overview-card { padding: 16px; gap: 10px; }
   .overview-icon { width: 36px; height: 36px; }
   .overview-icon svg { width: 20px; height: 20px; }
@@ -502,6 +504,7 @@ fieldset:disabled { opacity: .6; }
   .service-item > div, .service-copy { gap: 6px; }
   .service-name, .service-item strong { font-size: 12px; }
   .service-bar .button { min-height: 32px; margin-left: auto; font-size: 12px; }
+  .service-bar .connection-actions .button { margin-left: 0; }
   .setup-panel > summary { padding: 12px 14px; gap: 12px; }
   .setup-panel > summary > span:first-child { gap: 2px 10px; }
   .setup-summary { display: block; font-size: 12px; }

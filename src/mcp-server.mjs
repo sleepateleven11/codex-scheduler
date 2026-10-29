@@ -17,7 +17,11 @@ const toolNames = new Set(tools.map(t => t.name));
 async function callTool(name, args = {}, meta = {}) {
   const sourceThreadId = resolveDesktopSourceThreadId(meta);
   if (process.env.CODEX_APP_TOOLS_PIPE_PATH && sourceThreadId) await registerDesktopConnection({ sourceThreadId });
-  if (name === 'scheduler_open') { const endpoint = await ensureDaemon(); return { url: dashboardUrl(endpoint), message: '请在 Codex 面板中打开此地址。' }; }
+  if (name === 'scheduler_open') {
+    const endpoint = await ensureDaemon();
+    const connection = await requestApi('/api/desktop/reconnect', { method: 'POST', body: {} });
+    return { url: dashboardUrl(endpoint), ...connection, message: connection.desktop?.connected ? '已连接 Codex。' : '请在初始化入口查看连接状态。' };
+  }
   if (name === 'scheduler_catalog') { const { projects, models, quota, timeZone } = await requestApi('/api/bootstrap'); return { projects, models, quota, timeZone }; }
   if (name === 'scheduler_threads') return requestApi(`/api/threads?projectPath=${encodeURIComponent(args.projectPath)}`);
   if (name === 'scheduler_create') {
@@ -47,7 +51,7 @@ input.on('line', async line => {
       // Only the genuine desktop-provided environment is used during discovery.
       // A missing context leaves registration untouched and does not break MCP.
       await registerDesktopConnectionFromHost();
-      result = { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: { name: 'codex-scheduler', version: '0.4.0' } };
+      result = { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: { name: 'codex-scheduler', version: '0.4.1' } };
     }
     else if (request.method === 'ping') result = {};
     else if (request.method === 'tools/list') result = { tools };

@@ -90,7 +90,7 @@ export class CodexAdapter {
       const result = await this.desktop.callTool('list_projects', {});
       if (result.isError) throw new Error('无法连接 Codex 桌面，请打开 Codex 并重新加载时序插件，已有任务会保留。');
       this.desktopHealth = { connected: true };
-    } catch (error) { this.desktopHealth = { connected: false, message: error.message }; }
+    } catch (error) { this.desktopHealth = { connected: false, message: error.message, ...(error instanceof DesktopClientError ? { code: error.code } : {}) }; }
     this.desktopHealthAt = Date.now();
     return this.desktopHealth;
   }

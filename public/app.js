@@ -9,7 +9,7 @@
     loadingThreads: false, threadRequest: 0, polling: false, submitting: false,
     taskSignature: "", toastTimeout: null, actionPending: new Set(), token: "", pendingCreation: null,
     preferences: {}, preferenceTail: Promise.resolve(), editingId: null, draftSnapshot: null, loadingDraft: false,
-    reconnecting: false, noticeTaskId: null, loadedTasks: false,
+    reconnecting: false, initializing: false, initialization: null, desktopRevision: 0, needsConnectedRefresh: false, noticeTaskId: null, loadedTasks: false,
     diagnostics: null, checkingSetup: false, setupReported: false, diagnosticsSignature: "",
     pendingActions: new Map(), threadError: null, selectedThreadId: "", renderedFilter: "active", bootstrapping: false,
     deletedTaskIds: new Set(),
@@ -79,13 +79,15 @@
     node.style.whiteSpace = "pre-line";
     node.hidden = !alerts.length;
   }
-  function updateDesktop(desktop) {
+  function updateDesktop(desktop, initialization, readRevision = state.desktopRevision) {
+    if (readRevision !== state.desktopRevision) return false;
+    const disconnected = state.desktop?.connected === false;
     if (desktop !== undefined) state.desktop = desktop;
-    const message = state.desktop?.message;
-    showAlert(state.desktop?.connected === false
-      ? typeof message === "string" && /[\u3400-\u9fff]/.test(message) ? message : "Codex 发送服务尚未连接。请保持 Codex 运行，然后点击“重新连接”；任务会保留。"
-      : "", "warning", "desktop");
+    if (initialization !== undefined) state.initialization = initialization;
+    if (disconnected && state.desktop?.connected === true) state.needsConnectedRefresh = true;
+    showAlert("", "warning", "desktop");
     renderServices();
+    return true;
   }
   function toast(message, error = false) {
     clearTimeout(state.toastTimeout);
@@ -108,13 +110,22 @@
     const workerReady = state.connected && !["stopped", "stopping", "error"].includes(state.worker?.status);
     $("background-dot").className = "service-dot " + (workerReady ? "online" : "offline");
     $("background-label").textContent = !state.connected ? "连接已中断" : workerReady ? "已连接" : "尚未运行";
-    const desktopReady = state.desktop?.connected === true;
-    $("desktop-dot").className = "service-dot " + (desktopReady ? "online" : state.desktop ? "offline" : "");
-    $("desktop-label").textContent = state.reconnecting ? "正在重新连接…" : desktopReady ? "已连接" : state.desktop ? "未连接" : "正在检查";
-    $("reconnect-button").hidden = desktopReady;
-    $("reconnect-button").disabled = state.reconnecting || !state.connected || state.submitting || state.loadingDraft || state.checkingSetup || state.bootstrapping;
+    const view = ui.desktopConnectionView(state);
+    const unavailable = !state.connected || state.submitting || state.loadingDraft || state.checkingSetup || state.bootstrapping;
+    $("desktop-dot").className = "service-dot " + (view.ready ? "online" : view.pending || state.reconnecting ? "connecting" : state.desktop ? "offline" : "");
+    $("desktop-label").textContent = view.label;
+    $("connection-actions").hidden = view.ready;
+    $("initialize-button").hidden = !view.showInitialize;
+    $("initialize-button").disabled = unavailable || state.initializing || !view.canInitialize;
+    $("initialize-button").textContent = view.initializeLabel;
+    $("initialize-button").setAttribute("aria-busy", String(!view.ready && (view.pending || state.initializing)));
+    $("initialize-button").classList.toggle("is-loading", state.initializing);
+    $("reconnect-button").hidden = view.ready;
+    $("reconnect-button").disabled = state.reconnecting || state.initializing || unavailable;
     $("reconnect-button").textContent = state.reconnecting ? "连接中…" : "重新连接";
-    $("service-help").textContent = !state.connected ? "请双击“时序任务管理器”重新打开，任务记录会保留。" : desktopReady ? "保持 Codex 运行、电脑唤醒，任务会按时发送。" : "请完成连接自检。已有任务会保留，连接恢复后继续。";
+    $("reconnect-button").setAttribute("aria-busy", String(state.reconnecting));
+    $("service-help").textContent = view.help;
+    $("service-help").hidden = !view.help;
   }
   function updateDiagnostics(report) {
     if (report === undefined) return;
@@ -143,9 +154,10 @@
     if (report?.ready === false && previousReady !== false) $("setup-panel").open = true;
     setComposerMode();
   }
-  async function checkSetup() {
-    if (state.checkingSetup || state.submitting || state.loadingDraft) return;
+  async function checkSetup({ quiet = false } = {}) {
+    if (state.checkingSetup || state.submitting || state.loadingDraft || state.initializing || state.reconnecting) return;
     state.checkingSetup = true;
+    const desktopReadRevision = ++state.desktopRevision;
     setComposerMode();
     $("diagnostics-button").disabled = true;
     $("diagnostics-button").setAttribute("aria-busy", "true");
@@ -155,26 +167,29 @@
     try {
       const report = await api("/api/diagnostics", { method: "POST", body: "{}" });
       updateDiagnostics(report.diagnostics || report);
-      const previousThread = $("thread-select").value;
       const data = await api("/api/bootstrap");
+      const previousThread = $("thread-select").value;
       state.projects = data.projects || [];
       state.models = data.models || [];
       if (data.worker) state.worker = data.worker;
       if (data.quota !== undefined) state.quota = data.quota;
       receiveTasks(data.tasks || []);
       receiveCycles(data.quotaCycles || []);
-      connection(true); updateDesktop(data.desktop); updateDiagnostics(data.diagnostics);
+      connection(true);
+      if (updateDesktop(data.desktop, data.initialization, desktopReadRevision)) updateDiagnostics(data.diagnostics);
       populateProjects(data); populateModels();
       $("schedule-fields").disabled = false;
       renderQuota(); renderTasks();
       await loadThreads(previousThread);
       showAlert("", "warning", "connection");
-      if (state.diagnostics?.ready) toast("本机设置和连接检查通过");
+      state.needsConnectedRefresh = false;
+      if (!quiet && state.diagnostics?.ready) toast("本机设置和连接检查通过");
     } catch (error) {
       $("setup-error").textContent = "检测未完成：" + readableError(error);
       $("setup-error").hidden = false;
       $("setup-panel").open = true;
     } finally {
+      if (desktopReadRevision === state.desktopRevision) state.desktopRevision++;
       state.checkingSetup = false;
       $("diagnostics-button").disabled = false;
       $("diagnostics-button").setAttribute("aria-busy", "false");
@@ -183,22 +198,33 @@
       setComposerMode();
     }
   }
-  async function reconnectDesktop() {
-    if (state.reconnecting || !state.connected) return;
-    state.reconnecting = true;
-    renderServices();
+  async function refreshConnectedSetup() {
+    if (!state.needsConnectedRefresh || state.desktop?.connected !== true || state.checkingSetup || state.submitting || state.loadingDraft || state.bootstrapping || state.reconnecting || state.initializing) return;
+    state.needsConnectedRefresh = false;
+    await checkSetup({ quiet: true });
+  }
+  async function changeDesktopConnection(initialize = false) {
+    if (state.reconnecting || state.initializing || !state.connected || state.submitting || state.loadingDraft || state.checkingSetup || state.bootstrapping) return;
+    if (initialize && !ui.desktopConnectionView(state).canInitialize) return;
+    const requestRevision = ++state.desktopRevision;
+    state.initializing = initialize;
+    state.reconnecting = !initialize;
+    setComposerMode();
     showAlert("", "warning", "general");
     try {
-      const data = await api("/api/desktop/reconnect", { method: "POST", body: "{}" });
-      updateDesktop(data.desktop);
+      const data = await api(initialize ? "/api/desktop/initialize" : "/api/desktop/reconnect", { method: "POST", body: "{}" });
+      if (!updateDesktop(data.desktop, data.initialization, requestRevision)) return;
       updateDiagnostics(data.diagnostics);
       if (data.desktop?.connected) toast("Codex 发送服务已连接");
-      else showAlert(data.desktop?.message || "还未连上 Codex。请确认 Codex 已运行，然后再次连接。任务会继续保留。", "warning", "desktop");
-      await poll();
-      await checkSetup();
-    } catch (error) { showAlert("重新连接未完成：" + readableError(error), "error", "desktop"); }
-    finally { state.reconnecting = false; renderServices(); }
+    } catch (error) { showAlert((initialize ? "初始化未完成：" : "重新连接未完成：") + readableError(error), "error", "desktop"); }
+    finally {
+      if (requestRevision === state.desktopRevision) state.desktopRevision++;
+      state.reconnecting = false; state.initializing = false; setComposerMode();
+      void refreshConnectedSetup();
+    }
   }
+  const reconnectDesktop = () => changeDesktopConnection(false);
+  const initializeDesktop = () => changeDesktopConnection(true);
   function readPreferences() {
     try { return ui.pickPreferences(JSON.parse(localStorage.getItem("scheduler-preferences") || "{}")); }
     catch (_) { return {}; }
@@ -869,13 +895,13 @@
     $("cycle-trigger").closest("label").title = editing ? "请先取消任务编辑，再创建独立的额度循环。" : "";
     const editingLocked = editing && !ui.canEditTask(state.tasks.find((task) => task.id === state.editingId) || {});
     const blocked = ui.submissionBlockReason({ connected: state.connected, diagnostics: state.diagnostics, thread: state.threads.find((thread) => thread.id === $("thread-select").value) });
-    $("submit-button").disabled = state.submitting || state.loadingDraft || state.loadingThreads || state.checkingSetup || state.bootstrapping || deletingEditedTask || editingLocked || !!blocked;
+    $("submit-button").disabled = state.submitting || state.loadingDraft || state.loadingThreads || state.checkingSetup || state.bootstrapping || state.reconnecting || state.initializing || deletingEditedTask || editingLocked || !!blocked;
     $("submission-help").hidden = !blocked;
     const providerBlocked = state.threads.find((thread) => thread.id === $("thread-select").value)?.providerCompatible === false;
     $("submission-help").textContent = providerBlocked ? "所选对话暂不能发送，请在上方选择 OpenAI 对话。" : blocked;
     if (editingLocked) $("cancel-edit").textContent = "保留为新草稿";
-    $("refresh-button").disabled = state.submitting || state.loadingDraft || state.checkingSetup || state.polling || state.bootstrapping;
-    $("diagnostics-button").disabled = state.submitting || state.loadingDraft || state.checkingSetup || state.reconnecting;
+    $("refresh-button").disabled = state.submitting || state.loadingDraft || state.checkingSetup || state.polling || state.bootstrapping || state.reconnecting || state.initializing;
+    $("diagnostics-button").disabled = state.submitting || state.loadingDraft || state.checkingSetup || state.reconnecting || state.initializing;
     renderServices();
     if (state.loadedTasks) renderTasks();
     renderCycles();
@@ -1075,6 +1101,7 @@
     if (state.polling) return;
     state.polling = true;
     const cycleReadRevision = state.cycleRevision;
+    const desktopReadRevision = state.desktopRevision;
     if (manual) { $("refresh-button").disabled = true; $("refresh-button").classList.add("is-loading"); $("refresh-button").setAttribute("aria-busy", "true"); }
     try {
       const data = await api("/api/tasks");
@@ -1084,12 +1111,11 @@
       if (data.quota !== undefined) state.quota = data.quota;
       connection(true);
       showAlert("", "warning", "connection");
-      updateDesktop(data.desktop);
-      updateDiagnostics(data.diagnostics);
+      if (updateDesktop(data.desktop, data.initialization, desktopReadRevision)) updateDiagnostics(data.diagnostics);
       renderQuota(); renderTasks();
       $("last-updated").textContent = "更新于 " + new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date());
     } catch (error) { connection(false); showAlert(readableError(error), "error", "connection"); }
-    finally { state.polling = false; $("refresh-button").classList.remove("is-loading"); $("refresh-button").setAttribute("aria-busy", "false"); setComposerMode(); }
+    finally { state.polling = false; $("refresh-button").classList.remove("is-loading"); $("refresh-button").setAttribute("aria-busy", "false"); setComposerMode(); void refreshConnectedSetup(); }
   }
   async function submit(event) {
     event.preventDefault();
@@ -1176,6 +1202,7 @@
   function updatePromptCount() { $("prompt-count").textContent = Array.from($("prompt-input").value).length + " 字"; }
   async function bootstrap() {
     state.bootstrapping = true;
+    const desktopReadRevision = state.desktopRevision;
     $("refresh-button").disabled = true;
     $("refresh-button").classList.add("is-loading");
     $("refresh-button").setAttribute("aria-busy", "true");
@@ -1191,12 +1218,11 @@
       selectTimeZone(state.preferences.timeZone || data.timeZone || "Asia/Shanghai") || selectTimeZone("Asia/Shanghai");
       connection(true);
       showAlert("", "warning", "connection");
-      updateDesktop(data.desktop);
-      updateDiagnostics(data.diagnostics === undefined ? null : data.diagnostics);
+      if (updateDesktop(data.desktop, data.initialization, desktopReadRevision)) updateDiagnostics(data.diagnostics === undefined ? null : data.diagnostics);
       populateProjects(data); populateModels();
       $("schedule-fields").disabled = false;
       setDefaultTime(); updateSendMode(); renderQuota(); renderTasks();
-      showAlert(!state.projects.length ? "还没有可用项目。请先在 Codex 中添加项目，然后刷新。" : !state.models.length ? "暂时没有可用模型，请稍后刷新。" : "", "warning");
+      showAlert(state.desktop?.connected !== true ? "" : !state.projects.length ? "还没有可用项目。请先在 Codex 中添加项目，然后刷新。" : !state.models.length ? "暂时没有可用模型，请稍后刷新。" : "", "warning");
       await loadThreads(state.preferences.projectPath === $("project-select").value ? state.preferences.threadId || "" : "");
     } catch (error) {
       connection(false); showAlert(readableError(error), "error", "connection");
@@ -1227,7 +1253,8 @@
   document.querySelector(".quick-times").addEventListener("click", (event) => { const button = event.target.closest("button[data-minutes]"); if (button) setQuickTime(Number(button.dataset.minutes)); });
   $("cancel-edit").addEventListener("click", cancelEdit);
   $("reconnect-button").addEventListener("click", reconnectDesktop);
-  $("diagnostics-button").addEventListener("click", checkSetup);
+  $("initialize-button").addEventListener("click", initializeDesktop);
+  $("diagnostics-button").addEventListener("click", () => checkSetup());
   $("setup-nav-button").addEventListener("click", () => { $("setup-panel").open = true; $("setup-panel").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); $("setup-panel").querySelector("summary").focus({ preventScroll: true }); });
   for (const type of ["input", "change"]) $("schedule-form").addEventListener(type, (event) => { event.target.removeAttribute("aria-invalid"); event.target.removeAttribute("aria-errormessage"); $("form-error").hidden = true; });
   $("notice-dismiss").addEventListener("click", () => { $("task-notice").hidden = true; });

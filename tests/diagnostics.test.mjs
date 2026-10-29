@@ -32,7 +32,7 @@ test('new user without host registration is guided to load the plugin without fa
   const report = await service.run();
   assert.equal(report.ready, false);
   assert.equal(report.checks.find(check => check.id === 'connection').status, 'fail');
-  assert.match(report.checks.find(check => check.id === 'connection').message, /加载时序插件/);
+  assert.match(report.checks.find(check => check.id === 'connection').message, /自动连接.*一键初始化/);
   assert.doesNotMatch(JSON.stringify(report), /secret|pipe/);
 });
 

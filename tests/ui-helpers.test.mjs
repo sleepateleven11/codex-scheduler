@@ -3,6 +3,52 @@ import test from 'node:test';
 await import('../public/ui-helpers.js');
 const ui = globalThis.SchedulerUI;
 
+test('opening initialization is still waiting until the desktop connection is confirmed', () => {
+  const view = ui.desktopConnectionView({ connected: true, desktop: { connected: false }, initialization: { status: 'waiting', message: '已打开 Codex，等待连接。', canInitialize: false } });
+  assert.equal(view.ready, false);
+  assert.equal(view.pending, true);
+  assert.equal(view.canInitialize, false);
+  assert.equal(view.showInitialize, true);
+  assert.match(view.label, /等待/);
+  assert.doesNotMatch(view.label, /已连接/);
+  assert.match(view.help, /等待连接/);
+});
+
+test('a verified connection hides initialization even when a delayed initialization status still says waiting', () => {
+  const view = ui.desktopConnectionView({ connected: true, desktop: { connected: true }, initialization: { status: 'waiting', message: '正在等待', canInitialize: false }, initializing: true });
+  assert.equal(view.ready, true);
+  assert.equal(view.pending, false);
+  assert.equal(view.label, '已连接');
+  assert.equal(view.showInitialize, false);
+  assert.equal(view.canInitialize, false);
+  assert.equal(view.help, '');
+});
+
+test('initialization retry requires explicit server permission and an available local background', () => {
+  const input = { connected: true, desktop: { connected: false }, initialization: { status: 'error', message: '连接超时，请重试。', canInitialize: true } };
+  assert.equal(ui.desktopConnectionView(input).canInitialize, true);
+  assert.match(ui.desktopConnectionView(input).help, /连接超时/);
+  assert.equal(ui.desktopConnectionView({ ...input, connected: false }).canInitialize, false);
+  assert.equal(ui.desktopConnectionView({ ...input, connected: false, desktop: { connected: true } }).ready, false);
+  assert.equal(ui.desktopConnectionView({ ...input, initialization: { ...input.initialization, canInitialize: false } }).canInitialize, false);
+  assert.equal(ui.desktopConnectionView({ ...input, initialization: null }).showInitialize, false);
+});
+
+test('initialization in progress cannot launch a duplicate or override an actual connected flag', () => {
+  const input = { connected: true, desktop: { connected: false }, initialization: { status: 'idle', canInitialize: true }, initializing: true };
+  assert.equal(ui.desktopConnectionView(input).canInitialize, false);
+  assert.equal(ui.desktopConnectionView(input).pending, true);
+  assert.match(ui.desktopConnectionView(input).label, /初始化/);
+  assert.equal(ui.desktopConnectionView({ ...input, desktop: { connected: true } }).ready, true);
+});
+
+test('initialization status alone never displays a successful sending connection', () => {
+  const view = ui.desktopConnectionView({ connected: true, desktop: { connected: false }, initialization: { status: 'connected', message: '连接成功', canInitialize: false } });
+  assert.equal(view.ready, false);
+  assert.equal(view.label, '未连接');
+  assert.doesNotMatch(view.help, /成功|已连接/);
+});
+
 test('only unsent pending and paused tasks expose editing', () => {
   for (const status of ['scheduled', 'waiting_quota', 'waiting_thread', 'paused']) assert.equal(ui.canEditTask({ status }), true);
   for (const status of ['running', 'completed', 'failed', 'cancelled', 'needs_review', undefined]) assert.equal(ui.canEditTask({ status }), false);

@@ -45,7 +45,7 @@ export class DiagnosticsService {
       check('account', 'ChatGPT 登录', subscription?.accountType === 'chatgpt' ? 'pass' : 'fail', subscription?.accountType === 'chatgpt' ? '已使用本机 ChatGPT 账号登录。' : '请在 Codex 中登录自己的 ChatGPT 账号；此版本使用订阅额度。'),
       check('provider', '模型服务商', subscription?.ready ? 'pass' : 'fail', subscription?.ready ? '当前设置支持 OpenAI / ChatGPT 订阅；每个目标对话还会单独核验。' : '当前模型服务商或登录状态不兼容。请在 Codex 设置中选择 OpenAI 并使用 ChatGPT 登录。'),
       check('desktop-tools', '桌面工具', ok(1) ? 'pass' : 'fail', ok(1) ? 'Codex 自带的桌面工具可用。' : '未找到桌面工具，请更新 Codex 并重新加载时序插件。'),
-      check('connection', '发送连接', value(4)?.connected ? 'pass' : 'fail', value(4)?.connected ? '已连接 Codex 发送服务，自检未发送消息。' : '请保持 Codex 运行，在 Codex 中加载时序插件并打开管理器，然后重新检测。'),
+      check('connection', '发送连接', value(4)?.connected ? 'pass' : 'fail', value(4)?.connected ? '已连接 Codex 发送服务。' : '正在自动连接；连接失败时点击“一键初始化”。'),
       check('projects', '本机项目', ok(5) && value(5)?.length ? 'pass' : 'fail', ok(5) && value(5)?.length ? '已读取本机项目。请选择自己的项目和已有对话。' : '请先在 Codex 添加本机项目并创建对话，再重新检测。'),
       check('models', '可选模型', ok(6) && value(6)?.length ? 'pass' : 'fail', ok(6) && value(6)?.length ? '已读取可选 GPT 模型，实际发送仍会检查服务商和额度。' : '暂时未能读取 GPT 模型，请检查 Codex 登录和服务商设置。'),
     ];

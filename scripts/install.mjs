@@ -24,11 +24,11 @@ export async function installOptionalManagerLaunchers(options, {
   try {
     const entrypoints = await installLaunchers(options);
     if (entrypoints.installed) log('已创建桌面和开始菜单的“时序任务管理器”，双击即可使用，也可在 Codex 中打开。');
-    else log('插件已安装并验证通过；可在 Codex 中说“打开定时任务管理器”。');
+    else log('插件已安装并验证通过；可从 Codex 的时序插件入口打开管理器。');
     return entrypoints;
   } catch (error) {
     log(`插件已安装并验证通过；桌面或开始菜单入口未创建：${error.message}`);
-    log('仍可在 Codex 中说“打开定时任务管理器”。');
+    log('可从 Codex 的时序插件入口打开管理器。');
     return { installed: false, warning: true };
   }
 }

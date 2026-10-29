@@ -4,6 +4,22 @@
 (() => {
   const editable = new Set(["scheduled", "waiting_quota", "waiting_thread", "paused"]);
   const threadClock = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  function desktopConnectionView({ connected = false, desktop = null, initialization = null, reconnecting = false, initializing = false } = {}) {
+    const ready = connected && desktop?.connected === true;
+    const status = initialization?.status;
+    const pending = initializing || status === "connecting" || status === "waiting";
+    const message = status === "connected" && !ready ? "" : typeof initialization?.message === "string" ? initialization.message.trim() : "";
+    const desktopMessage = typeof desktop?.message === "string" ? desktop.message.trim() : "";
+    return {
+      ready,
+      pending: !ready && pending,
+      label: ready ? "已连接" : !connected ? "等待后台" : initializing ? "正在初始化…" : reconnecting ? "正在连接…" : status === "connecting" ? "自动连接中…" : status === "waiting" ? "等待 Codex 连接" : desktop ? "未连接" : "正在检查",
+      help: !connected ? "请重新打开任务管理器，任务记录会保留。" : ready ? "" : initializing ? "正在启动初始化…" : message || desktopMessage || "正在自动连接；如未连上，可点击一键初始化。",
+      showInitialize: !ready && initialization !== null,
+      canInitialize: !ready && connected && !pending && !reconnecting && initialization?.canInitialize === true,
+      initializeLabel: initializing ? "初始化中…" : status === "waiting" ? "等待连接…" : "一键初始化",
+    };
+  }
   function canEditTask(task) {
     return editable.has(task.status) && !task.submissionReceipt && !task.turnId && !["intent", "submitted"].includes(task.dispatchState);
   }
@@ -202,5 +218,5 @@
     if (thread && threadProviderStatus(thread).compatible === false) return threadProviderStatus(thread).issue;
     return diagnosticsBlockReason(diagnostics);
   }
-  globalThis.SchedulerUI = Object.freeze({ canEditTask, canDeleteTask, taskDeleteBlockReason, taskDeleteConfirmation, secondsLeft, remainingTime, taskSendMode, quotaTriggerHint, quotaRemainingText, quotaWindowSummary, taskTriggerText, taskCountdown, cycleStatus, cycleCountdown, cycleCompletedCount, cycleTriggerHint, cycleDeleteConfirmation, pickPreferences, taskNotice, threadTime, shortThreadIds, threadOptions, matchingThreads, threadProviderStatus, diagnosticsBlockReason, submissionBlockReason });
+  globalThis.SchedulerUI = Object.freeze({ desktopConnectionView, canEditTask, canDeleteTask, taskDeleteBlockReason, taskDeleteConfirmation, secondsLeft, remainingTime, taskSendMode, quotaTriggerHint, quotaRemainingText, quotaWindowSummary, taskTriggerText, taskCountdown, cycleStatus, cycleCountdown, cycleCompletedCount, cycleTriggerHint, cycleDeleteConfirmation, pickPreferences, taskNotice, threadTime, shortThreadIds, threadOptions, matchingThreads, threadProviderStatus, diagnosticsBlockReason, submissionBlockReason });
 })();

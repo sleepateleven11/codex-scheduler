@@ -9,12 +9,13 @@ import { QueueManager } from './queue.mjs';
 import { QuotaCycleManager } from './quota-cycle.mjs';
 import { PreferencesStore } from './preferences.mjs';
 import { DiagnosticsService } from './diagnostics.mjs';
+import { DesktopConnectionManager } from './connection-manager.mjs';
 
 const paths = getPaths();
-const version = '0.4.0';
+const version = '0.4.1';
 const preferences = new PreferencesStore(paths.configPath);
 const startedAt = new Date().toISOString();
-let lockHandle; let server; let mutexServer; let queue; let quotaCycles; let adapter; let diagnostics; let endpoint; let stopping = false;
+let lockHandle; let server; let mutexServer; let queue; let quotaCycles; let adapter; let diagnostics; let connections; let endpoint; let stopping = false;
 const mutexSockets = new Set();
 
 function alive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
@@ -94,7 +95,12 @@ async function route(request, response) {
     }
     if (stopping) return json(response, 503, { message: '后台正在停止，请稍后重新打开插件。' });
     if (request.method === 'POST' && url.pathname === '/api/desktop/reconnect') {
-      return json(response, 200, { desktop: await adapter.reconnectDesktop() });
+      return json(response, 200, await connections.check({ force: true }));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/desktop/initialize') {
+      const input = await body(request);
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new Error('初始化不接受自定义参数。');
+      return json(response, 200, await connections.initialize());
     }
     if (url.pathname === '/api/diagnostics' && ['GET', 'POST'].includes(request.method)) {
       return json(response, 200, await diagnostics.run({ refresh: request.method === 'POST', reconnect: request.method === 'POST' }));
@@ -102,13 +108,13 @@ async function route(request, response) {
     if (request.method === 'GET' && url.pathname === '/api/preferences') return json(response, 200, { preferences: await preferences.read() });
     if (request.method === 'PUT' && url.pathname === '/api/preferences') return json(response, 200, { preferences: await preferences.update(await body(request)) });
     if (request.method === 'GET' && url.pathname === '/api/bootstrap') {
-      const probes = await Promise.allSettled([adapter.projects(), adapter.models(), adapter.getQuota(), adapter.desktopStatus(), preferences.read(), diagnostics.run()]);
+      const probes = await Promise.allSettled([adapter.projects(), adapter.models(), adapter.getQuota(), connections.check(), preferences.read(), diagnostics.run()]);
       const value = (index, fallback) => probes[index].status === 'fulfilled' ? probes[index].value : fallback;
-      return json(response, 200, { projects: value(0, []), models: value(1, []), quota: value(2, null), desktop: value(3, { connected: false }), preferences: value(4, {}), diagnostics: value(5, null), worker: workerState(), tasks: queue.list(), quotaCycles: quotaCycles.list(), timeZone: 'Asia/Shanghai' });
+      return json(response, 200, { projects: value(0, []), models: value(1, []), quota: value(2, null), ...value(3, connections.snapshot()), preferences: value(4, {}), diagnostics: value(5, null), worker: workerState(), tasks: queue.list(), quotaCycles: quotaCycles.list(), timeZone: 'Asia/Shanghai' });
     }
     if (request.method === 'GET' && url.pathname === '/api/threads') return json(response, 200, { threads: await adapter.threads(url.searchParams.get('projectPath') || '') });
     if (request.method === 'GET' && url.pathname === '/api/quota') return json(response, 200, await adapter.getQuota(url.searchParams.get('model'), { refresh: true }));
-    if (request.method === 'GET' && url.pathname === '/api/tasks') return json(response, 200, { tasks: queue.list(), quotaCycles: quotaCycles.list(), worker: workerState(), quota: await adapter.getQuota(), desktop: await adapter.desktopStatus(), diagnostics: await diagnostics.run() });
+    if (request.method === 'GET' && url.pathname === '/api/tasks') return json(response, 200, { tasks: queue.list(), quotaCycles: quotaCycles.list(), worker: workerState(), quota: await adapter.getQuota(), ...await connections.check(), diagnostics: await diagnostics.run() });
     if (request.method === 'GET' && url.pathname === '/api/quota-cycles') return json(response, 200, { rules: quotaCycles.list() });
     if (request.method === 'POST' && url.pathname === '/api/quota-cycles') {
       const input = await body(request);
@@ -173,7 +179,7 @@ async function shutdown() {
   stopping = true;
   shutdown.promise = (async () => {
     try {
-      const results = await Promise.allSettled([quotaCycles?.stop(), queue?.stop()]);
+      const results = await Promise.allSettled([quotaCycles?.stop(), queue?.stop(), connections?.stop()]);
       const failed = results.find(result => result.status === 'rejected');
       if (failed) throw failed.reason;
     }
@@ -203,6 +209,7 @@ try {
   if (!await claimProcessMutex()) process.exit(0);
   if (!await claimLock()) process.exit(0);
   adapter = new CodexAdapter();
+  connections = new DesktopConnectionManager({ adapter });
   diagnostics = new DiagnosticsService({ adapter, paths });
   queue = new QueueManager({ storePath: paths.storePath, adapter, maxConcurrent: 1 });
   await queue.initialize();
@@ -217,6 +224,7 @@ try {
   await fs.writeFile(paths.endpointPath, JSON.stringify(endpoint), { mode: 0o600 });
   queue.start();
   quotaCycles.start();
+  connections.start();
   console.log(`${new Date().toISOString()} Scheduler worker ready`);
   process.on('SIGTERM', () => { void shutdown().catch(logShutdownError); });
   process.on('SIGINT', () => { void shutdown().catch(logShutdownError); });

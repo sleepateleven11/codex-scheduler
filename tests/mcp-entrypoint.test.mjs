@@ -38,7 +38,7 @@ test('real MCP initialize registers genuine host context without a tools/call or
   const dir = await directory(t);
   const request = await mcp(t, dir, { CODEX_THREAD_ID: SOURCE, CODEX_APP_TOOLS_PIPE_PATH: PIPE });
   const initialized = await request('initialize', { protocolVersion: '2024-11-05', capabilities: {} });
-  assert.equal(initialized.result.serverInfo.version, '0.4.0');
+  assert.equal(initialized.result.serverInfo.version, '0.4.1');
   assert.ok(initialized.result.capabilities.resources);
   const descriptor = JSON.parse(await fs.readFile(path.join(dir, 'desktop-connection.json'), 'utf8'));
   assert.equal(descriptor.sourceThreadId, SOURCE); assert.equal(descriptor.pipePath, PIPE);
@@ -69,7 +69,7 @@ test('MCP advertises and forwards an explicitly authorized quota trigger without
   const submissions = [];
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.4.0', status: 'running' } }));
+    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.4.1', status: 'running' } }));
     assert.equal(req.url, '/api/tasks');
     assert.equal(req.method, 'POST');
     const chunks = [];
@@ -102,7 +102,7 @@ test('MCP routes explicit recurring consent and cycle controls through the indep
   const id = '55555555-5555-4555-8555-555555555555';
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.4.0', status: 'running' } }));
+    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.4.1', status: 'running' } }));
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const text = Buffer.concat(chunks).toString();
@@ -133,7 +133,7 @@ test('MCP advertises destructive local deletion and forwards it using the DELETE
   const id = '44444444-4444-4444-8444-444444444444';
   const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.4.0', status: 'running' } }));
+    if (req.url === '/api/health') return res.end(JSON.stringify({ worker: { version: '0.4.1', status: 'running' } }));
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     calls.push({ method: req.method, url: req.url, body: Buffer.concat(chunks).toString() });
@@ -175,15 +175,34 @@ test('invalid or missing host registration never overwrites an existing genuine 
 });
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
-async function widget(t, { url = 'http://127.0.0.1:1234/#token=fixture', openError = false, displayMode = 'fullscreen' } = {}) {
-  const calls = []; const elements = new Map(); let listener;
-  for (const id of ['open', 'status']) elements.set(id, { disabled: false, textContent: '', addEventListener(event, fn) { this[event] = fn; } });
-  const parent = { postMessage(message) { calls.push(message); if (message.id != null) queueMicrotask(() => listener({ source: parent, data: { jsonrpc: '2.0', id: message.id, result: message.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify({ url }) }] } : message.method === 'ui/open-link' ? { isError: openError } : { hostContext: { displayMode } } } })); } };
+async function widget(t, { url = 'http://127.0.0.1:1234/#token=fixture', openError = false, displayMode = 'fullscreen', deepLink, desktop, holdInitialize = false, holdTools = false, initializeErrors = 0 } = {}) {
+  const calls = []; const elements = new Map(), heldTools = []; let listener, heldInitialize;
+  const toolValue = () => ({ content: [{ type: 'text', text: JSON.stringify({ url, ...(desktop === undefined ? {} : { desktop }) }) }] });
+  const contextValue = () => ({ hostContext: { displayMode, ...(deepLink === undefined ? {} : { 'openai/deepLink': { url: deepLink } }) } });
+  const emit = data => listener({ source: parent, data: { jsonrpc: '2.0', ...data } });
+  const reply = (message, result) => emit({ id: message.id, result });
+  for (const id of ['open', 'status', 'heading', 'intro']) elements.set(id, { disabled: false, textContent: '', addEventListener(event, fn) { this[event] = fn; } });
+  const parent = { postMessage(message) {
+    calls.push(message);
+    if (message.id == null) return;
+    if (message.method === 'ui/initialize' && holdInitialize) { heldInitialize = message; return; }
+    if (message.method === 'tools/call' && holdTools) { heldTools.push(message); return; }
+    queueMicrotask(() => {
+      if (message.method === 'ui/initialize' && initializeErrors-- > 0) return emit({ id: message.id, error: { message: 'Fixture handshake failure' } });
+      reply(message, message.method === 'tools/call' ? toolValue() : message.method === 'ui/open-link' ? { isError: openError } : contextValue());
+    });
+  } };
   const window = { parent, addEventListener(event, fn) { listener = fn; } };
   const context = vm.createContext({ window, document: { getElementById: id => elements.get(id) }, URL, Map, Error, JSON, setTimeout, clearTimeout });
   const code = launcherHtml.match(/<script>([\s\S]*?)<\/script>/)[1];
   vm.runInContext(code, context); await settle();
-  return { calls, elements, async toolResult(result = { content: [{ type: 'text', text: JSON.stringify({ url }) }] }) { listener({ source: parent, data: { jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: result } }); await settle(); }, async click() { elements.get('open').click(); await settle(); } };
+  return { calls, elements,
+    async toolResult(result = toolValue()) { emit({ method: 'ui/notifications/tool-result', params: result }); await settle(); },
+    async hostContext(update) { emit({ method: 'ui/notifications/host-context-changed', params: update }); await settle(); },
+    async finishInitialize() { assert.ok(heldInitialize); reply(heldInitialize, contextValue()); heldInitialize = null; await settle(); },
+    async finishTool(result = toolValue(), index = 0) { const [message] = heldTools.splice(index, 1); assert.ok(message); reply(message, result); await settle(); },
+    async click() { elements.get('open').click(); await settle(); },
+  };
 }
 
 test('native entrypoint uses only the standard host bridge and launches localhost once per opening', async t => {
@@ -219,4 +238,157 @@ test('an unsupported native open-link leaves a usable desktop shortcut fallback'
   const w = await widget(t, { openError: true }); await w.toolResult();
   assert.match(w.elements.get('status').textContent, /桌面/);
   assert.equal(w.elements.get('open').disabled, false);
+});
+
+test('initialization deep link accepts a verified connection arriving after the UI handshake without opening a dashboard', async t => {
+  const w = await widget(t, { deepLink: '/initialize', desktop: { connected: true } });
+  assert.equal(w.elements.get('heading').textContent, '连接 Codex');
+  assert.doesNotMatch(w.elements.get('status').textContent, /连接成功/);
+  await w.toolResult();
+  assert.match(w.elements.get('status').textContent, /连接成功/);
+  assert.equal(w.elements.get('open').textContent, '重新检测');
+  await w.click();
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+  assert.deepEqual(w.calls.filter(call => call.method === 'tools/call').map(call => call.params.name), ['scheduler_open']);
+});
+
+test('initialization result arriving before the handshake waits for the genuine deep link context', async t => {
+  const w = await widget(t, { deepLink: '/initialize', desktop: { connected: true }, holdInitialize: true });
+  await w.toolResult();
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+  assert.doesNotMatch(w.elements.get('status').textContent, /连接成功/);
+  await w.finishInitialize();
+  assert.match(w.elements.get('status').textContent, /连接成功/);
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+  assert.equal(w.calls.filter(call => call.method === 'tools/call').length, 0);
+});
+
+test('initialization never treats an opened URL, a missing status, or a false connection as success', async t => {
+  for (const desktop of [undefined, {}, { connected: false, message: 'Codex 未启动，请重试。' }, { connected: 'true' }]) {
+    const w = await widget(t, { deepLink: '/initialize', desktop });
+    await w.toolResult();
+    assert.doesNotMatch(w.elements.get('status').textContent, /连接成功/);
+    assert.match(w.elements.get('status').textContent, /重试/);
+    assert.equal(w.elements.get('open').disabled, false);
+    assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+  }
+});
+
+test('initialization resource failure can retry the read-only tool and requires its verified connection result', async t => {
+  const w = await widget(t, { deepLink: '/initialize', desktop: { connected: true } });
+  await w.toolResult({ isError: true, content: [{ type: 'text', text: 'Fixture tool failed' }] });
+  assert.match(w.elements.get('status').textContent, /未完成.*重试/);
+  assert.equal(w.elements.get('open').textContent, '重试连接');
+  await w.click();
+  assert.match(w.elements.get('status').textContent, /连接成功/);
+  assert.equal(w.calls.filter(call => call.method === 'tools/call').length, 1);
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+});
+
+test('malformed initialization output stays recoverable and cannot report a successful connection', async t => {
+  for (const result of [{}, { content: [{ type: 'text', text: 'not JSON' }] }, { structuredContent: [] }]) {
+    const w = await widget(t, { deepLink: '/initialize' });
+    await w.toolResult(result);
+    assert.match(w.elements.get('status').textContent, /未能读取连接结果.*重试/);
+    assert.equal(w.elements.get('open').disabled, false);
+    assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+  }
+});
+
+test('reusing a global app for initialization checks a fresh result and preserves its mode across partial context updates', async t => {
+  const w = await widget(t, { displayMode: 'inline', desktop: { connected: true } });
+  await w.toolResult();
+  await w.hostContext({ 'openai/deepLink': { url: '/initialize' } });
+  assert.match(w.elements.get('status').textContent, /连接成功/);
+  assert.equal(w.calls.filter(call => call.method === 'tools/call').length, 1);
+  await w.hostContext({ displayMode: 'fullscreen' });
+  await w.click();
+  assert.equal(w.elements.get('heading').textContent, '连接 Codex');
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+  assert.equal(w.calls.filter(call => call.method === 'tools/call').length, 2);
+});
+
+test('a normal dashboard request already in flight cannot open a new browser after the host switches to initialization', async t => {
+  const w = await widget(t, { displayMode: 'inline', desktop: { connected: true }, holdTools: true });
+  await w.click();
+  await w.hostContext({ 'openai/deepLink': { url: '/initialize' } });
+  assert.equal(w.calls.filter(call => call.method === 'tools/call').length, 2);
+  await w.finishTool(undefined, 1);
+  assert.match(w.elements.get('status').textContent, /连接成功/);
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+  // Retire the stale RPC without letting it alter the initialization view.
+  // The browser host may complete these readonly calls in either order.
+  await w.finishTool();
+  assert.match(w.elements.get('status').textContent, /连接成功/);
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+});
+
+test('leaving initialization through a new normal deep link keeps the regular manager opening action', async t => {
+  const w = await widget(t, { deepLink: '/initialize', desktop: { connected: true } });
+  await w.toolResult();
+  await w.hostContext({ 'openai/deepLink': { url: '/' } });
+  assert.equal(w.elements.get('heading').textContent, '时序任务管理器');
+  assert.match(w.elements.get('status').textContent, /管理器已打开/);
+  assert.equal(w.calls.filter(call => call.method === 'tools/call').length, 1);
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 1);
+});
+
+test('a failed host handshake has a working retry that does not call a model or prematurely report success', async t => {
+  const w = await widget(t, { deepLink: '/initialize', initializeErrors: 1, desktop: { connected: true } });
+  assert.match(w.elements.get('status').textContent, /连接失败.*重试/);
+  assert.equal(w.elements.get('open').disabled, false);
+  await w.click();
+  assert.equal(w.calls.filter(call => call.method === 'ui/initialize').length, 2);
+  await w.toolResult();
+  assert.match(w.elements.get('status').textContent, /连接成功/);
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+  assert.equal(w.calls.filter(call => call.method === 'ui/message').length, 0);
+});
+
+test('a fresh initialization attempt never reuses the previous successful result or a stale host tool notification', async t => {
+  const attemptA = '/initialize?attempt=' + 'a'.repeat(32);
+  const attemptB = '/initialize?attempt=' + 'b'.repeat(32);
+  const w = await widget(t, { deepLink: attemptA, desktop: { connected: true }, holdTools: true });
+  await w.toolResult();
+  assert.match(w.elements.get('status').textContent, /连接成功/);
+  await w.hostContext({ 'openai/deepLink': { url: attemptB } });
+  assert.equal(w.calls.filter(call => call.method === 'tools/call').length, 1);
+  assert.match(w.elements.get('status').textContent, /正在检测连接/);
+  assert.equal(w.elements.get('open').disabled, true);
+  await w.toolResult();
+  assert.doesNotMatch(w.elements.get('status').textContent, /连接成功/);
+  await w.finishTool({ structuredContent: { desktop: { connected: false, message: '等待 Codex 完成连接，请重试。' } } });
+  assert.match(w.elements.get('status').textContent, /等待 Codex/);
+  assert.equal(w.elements.get('open').textContent, '重试连接');
+  await w.click();
+  await w.finishTool();
+  assert.match(w.elements.get('status').textContent, /连接成功/);
+  assert.equal(w.calls.filter(call => call.method === 'tools/call').length, 2);
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+});
+
+test('attempt changes retire old pending checks so their late success cannot satisfy the new initialization', async t => {
+  const attemptA = '/initialize?attempt=' + '1'.repeat(32);
+  const attemptB = '/initialize?attempt=' + '2'.repeat(32);
+  const w = await widget(t, { deepLink: attemptA, desktop: { connected: true }, holdTools: true });
+  await w.click();
+  await w.hostContext({ 'openai/deepLink': { url: attemptB } });
+  assert.equal(w.calls.filter(call => call.method === 'tools/call').length, 2);
+  await w.finishTool();
+  assert.match(w.elements.get('status').textContent, /正在检测连接/);
+  assert.doesNotMatch(w.elements.get('status').textContent, /连接成功/);
+  await w.finishTool({ structuredContent: { desktop: { connected: false } } });
+  assert.doesNotMatch(w.elements.get('status').textContent, /连接成功/);
+  assert.equal(w.elements.get('open').disabled, false);
+  assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+});
+
+test('external or malformed app targets cannot enter the privileged initialization display mode', async t => {
+  for (const deepLink of ['https://example.com/initialize', '//example.com/initialize', '/initialize/else', '/initialize?attempt=short', '/initialize?attempt=' + 'A'.repeat(32), '/initialize?attempt=' + 'a'.repeat(32) + '&redirect=https://example.com']) {
+    const w = await widget(t, { deepLink, displayMode: 'inline', desktop: { connected: true } });
+    await w.toolResult();
+    assert.equal(w.elements.get('heading').textContent, '时序任务管理器');
+    assert.doesNotMatch(w.elements.get('status').textContent, /连接成功/);
+    assert.equal(w.calls.filter(call => call.method === 'ui/open-link').length, 0);
+  }
 });

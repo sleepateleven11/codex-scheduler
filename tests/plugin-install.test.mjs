@@ -582,7 +582,7 @@ test('desktop permission or foreign shortcut failures report only an optional en
     assert.equal(messages.length, 2);
     assert.match(messages[0], /插件已安装并验证通过.*入口未创建/);
     assert.ok(messages[0].includes(error.message));
-    assert.match(messages[1], /仍可在 Codex.*打开定时任务管理器/);
+    assert.match(messages[1], /Codex.*时序插件入口.*打开管理器/);
   }
 });
 
